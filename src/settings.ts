@@ -1,4 +1,4 @@
-import { App, PluginSettingTab, Setting, Notice, Modal, TextComponent } from "obsidian";
+import { App, PluginSettingTab, Setting, Notice, Modal } from "obsidian";
 import AgenterPlugin from "../main";
 import { probeModels } from "./api";
 
@@ -231,10 +231,10 @@ export class AgentSettingTab extends PluginSettingTab {
     const { containerEl } = this;
     containerEl.empty();
 
-    containerEl.createEl("h2", { text: "Agenter Settings" });
+    new Setting(containerEl).setName("Agenter Settings").setHeading();
 
     // --- Providers ---
-    containerEl.createEl("h3", { text: "Providers" });
+    new Setting(containerEl).setName("Providers").setHeading();
 
     new Setting(containerEl)
       .setName("Active provider")
@@ -253,10 +253,12 @@ export class AgentSettingTab extends PluginSettingTab {
 
     this.plugin.settings.providers.forEach((provider) => {
       const wrapper = containerEl.createDiv({ cls: "agenter-provider-block" });
-      wrapper.style.border = "1px solid var(--background-modifier-border)";
-      wrapper.style.borderRadius = "8px";
-      wrapper.style.padding = "12px";
-      wrapper.style.marginBottom = "12px";
+      wrapper.setCssStyles({
+        border: "1px solid var(--background-modifier-border)",
+        borderRadius: "8px",
+        padding: "12px",
+        marginBottom: "12px",
+      });
 
       new Setting(wrapper)
         .setName(`Provider: ${provider.name}`)
@@ -409,7 +411,7 @@ export class AgentSettingTab extends PluginSettingTab {
     );
 
     // --- Chat behavior ---
-    containerEl.createEl("h3", { text: "Chat behavior" });
+    new Setting(containerEl).setName("Chat behavior").setHeading();
 
     new Setting(containerEl)
       .setName("Default context scope")
@@ -478,7 +480,7 @@ export class AgentSettingTab extends PluginSettingTab {
       });
 
     // --- Custom prompt builder (form-based, no JSON required) ---
-    containerEl.createEl("h3", { text: "Custom prompts" });
+    new Setting(containerEl).setName("Custom prompts").setHeading();
     containerEl.createEl("p", {
       text:
         "Build your own reusable prompts (like Summarize or Rewrite). They appear in the chat / menu and beside selected text. Use {{selection}} where the selected text should go; if omitted, the selection is appended automatically.",
@@ -487,7 +489,7 @@ export class AgentSettingTab extends PluginSettingTab {
     this.renderPromptBuilder(containerEl.createDiv({ cls: "agenter-prompt-builder" }));
 
     // --- Tool approval ---
-    containerEl.createEl("h3", { text: "Tool approval" });
+    new Setting(containerEl).setName("Tool approval").setHeading();
     containerEl.createEl("p", {
       text:
         "Mutating tools pause and show a preview before they run. Moving a note to Trash always requires a two-step confirmation and cannot be disabled. Every note mutation also creates a recoverable safety backup inside the vault.",
@@ -627,7 +629,7 @@ class ProviderModal extends Modal {
 
   onOpen() {
     const { contentEl } = this;
-    contentEl.createEl("h3", { text: "Add provider" });
+    new Setting(contentEl).setName("Add provider").setHeading();
 
     const vals: ProviderConfig = {
       id: "tmp",
@@ -691,8 +693,7 @@ class ProviderModal extends Modal {
     );
 
     const status = contentEl.createEl("p");
-    status.style.fontSize = "12px";
-    status.style.opacity = "0.8";
+    status.setCssStyles({ fontSize: "12px", opacity: "0.8" });
 
     new Setting(contentEl).addButton((btn) =>
       btn.setButtonText("Test connection & fetch models").onClick(async () => {

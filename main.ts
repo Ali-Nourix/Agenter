@@ -1,4 +1,4 @@
-import { ItemView, MarkdownView, MarkdownRenderer, Menu, Notice, Plugin, WorkspaceLeaf } from "obsidian";
+import { Component, ItemView, MarkdownView, MarkdownRenderer, Notice, Plugin, WorkspaceLeaf } from "obsidian";
 import {
   AgentSettings,
   DEFAULT_SETTINGS,
@@ -14,16 +14,28 @@ export const AGENTER_VIEW_TYPE = "agenter-chat-view";
 /** Tiny inline SVG icon helper for plugin-level UI (selection popover). */
 function safeIconHtml(el: HTMLElement, icon: string) {
   const paths: Record<string, string> = {
-    sparkles: '<path d="M12 3l1.7 5.2L19 10l-5.3 1.8L12 17l-1.7-5.2L5 10l5.3-1.8z"/>',
-    x: '<path d="M6 6l12 12M18 6L6 18"/>',
+    sparkles: "M12 3l1.7 5.2L19 10l-5.3 1.8L12 17l-1.7-5.2L5 10l5.3-1.8z",
+    x: "M6 6l12 12M18 6L6 18",
   };
   el.empty();
-  const path = paths[icon];
-  if (!path) {
-    el.textContent = "•";
+  const d = paths[icon];
+  if (!d) {
+    el.setText("•");
     return;
   }
-  el.innerHTML = `<svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${path}</svg>`;
+  const NS = "http://www.w3.org/2000/svg";
+  const svg = document.createElementNS(NS, "svg");
+  svg.setAttribute("viewBox", "0 0 24 24");
+  svg.setAttribute("aria-hidden", "true");
+  svg.setAttribute("fill", "none");
+  svg.setAttribute("stroke", "currentColor");
+  svg.setAttribute("stroke-width", "1.8");
+  svg.setAttribute("stroke-linecap", "round");
+  svg.setAttribute("stroke-linejoin", "round");
+  const p = document.createElementNS(NS, "path");
+  p.setAttribute("d", d);
+  svg.appendChild(p);
+  el.appendChild(svg);
 }
 
 class AgenterChatView extends ItemView {
@@ -87,25 +99,25 @@ export default class AgenterPlugin extends Plugin {
     });
 
     this.addCommand({
-      id: "agenter-open-chat",
+      id: "open-chat",
       name: "Open chat in right sidebar",
       callback: () => void this.openDockedChat(),
     });
 
     this.addCommand({
-      id: "agenter-open-floating-chat",
+      id: "open-floating-chat",
       name: "Open floating chat",
       callback: () => void this.openFloatingChat(),
     });
 
     this.addCommand({
-      id: "agenter-close-chat",
+      id: "close-chat",
       name: "Close chat",
       callback: () => this.closeAllPanels(),
     });
 
     this.addCommand({
-      id: "agenter-ai-action-on-selection",
+      id: "ai-action-on-selection",
       name: "Run AI action on selection",
       editorCallback: (editor) => {
         const sel = editor.getSelection();
@@ -240,11 +252,28 @@ export default class AgenterPlugin extends Plugin {
     popover.addClass("agenter-selection-popover", "is-contextual");
     const sourcePath = this.app.workspace.getActiveFile()?.path ?? "";
 
+    // Dedicated short-lived component so we never pass the plugin (long-lived)
+    // as the render owner. Unloaded automatically when the popover is removed.
+    const renderComponent = new Component();
+    renderComponent.load();
+    let popoverWasConnected = false;
+    const lifecycleObserver = new MutationObserver(() => {
+      if (popover.isConnected) {
+        popoverWasConnected = true;
+        return;
+      }
+      if (popoverWasConnected) {
+        renderComponent.unload();
+        lifecycleObserver.disconnect();
+      }
+    });
+    lifecycleObserver.observe(document.body, { childList: true, subtree: true });
+
     const renderMd = (text: string, target: HTMLElement) => {
       target.empty();
       target.addClass("markdown-rendered");
       target.dir = /[\u0590-\u08FF]/.test(text) ? "rtl" : "ltr";
-      MarkdownRenderer.render(this.app, text, target, sourcePath, this).catch(() => {
+      MarkdownRenderer.render(this.app, text, target, sourcePath, renderComponent).catch(() => {
         target.setText(text);
       });
     };

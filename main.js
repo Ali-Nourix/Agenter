@@ -637,8 +637,8 @@ var AgentSettingTab = class extends import_obsidian2.PluginSettingTab {
   display() {
     const { containerEl } = this;
     containerEl.empty();
-    containerEl.createEl("h2", { text: "Agenter Settings" });
-    containerEl.createEl("h3", { text: "Providers" });
+    new import_obsidian2.Setting(containerEl).setName("Agenter Settings").setHeading();
+    new import_obsidian2.Setting(containerEl).setName("Providers").setHeading();
     new import_obsidian2.Setting(containerEl).setName("Active provider").setDesc("Select which provider/model to use for chat.").addDropdown((dd) => {
       this.plugin.settings.providers.forEach((p) => {
         dd.addOption(p.id, `${p.name} \u2014 ${p.model}`);
@@ -652,10 +652,12 @@ var AgentSettingTab = class extends import_obsidian2.PluginSettingTab {
     });
     this.plugin.settings.providers.forEach((provider) => {
       const wrapper = containerEl.createDiv({ cls: "agenter-provider-block" });
-      wrapper.style.border = "1px solid var(--background-modifier-border)";
-      wrapper.style.borderRadius = "8px";
-      wrapper.style.padding = "12px";
-      wrapper.style.marginBottom = "12px";
+      wrapper.setCssStyles({
+        border: "1px solid var(--background-modifier-border)",
+        borderRadius: "8px",
+        padding: "12px",
+        marginBottom: "12px"
+      });
       new import_obsidian2.Setting(wrapper).setName(`Provider: ${provider.name}`).setDesc(`Type: ${provider.type}`).addButton(
         (btn) => btn.setButtonText("Remove").setWarning().onClick(async () => {
           this.plugin.settings.providers = this.plugin.settings.providers.filter(
@@ -785,7 +787,7 @@ var AgentSettingTab = class extends import_obsidian2.PluginSettingTab {
         }).open();
       })
     );
-    containerEl.createEl("h3", { text: "Chat behavior" });
+    new import_obsidian2.Setting(containerEl).setName("Chat behavior").setHeading();
     new import_obsidian2.Setting(containerEl).setName("Default context scope").setDesc("What notes to include in context by default.").addDropdown((dd) => {
       dd.addOption("note", "Current note");
       dd.addOption("folder", "Current folder");
@@ -831,13 +833,13 @@ var AgentSettingTab = class extends import_obsidian2.PluginSettingTab {
         await this.plugin.saveSettings();
       });
     });
-    containerEl.createEl("h3", { text: "Custom prompts" });
+    new import_obsidian2.Setting(containerEl).setName("Custom prompts").setHeading();
     containerEl.createEl("p", {
       text: "Build your own reusable prompts (like Summarize or Rewrite). They appear in the chat / menu and beside selected text. Use {{selection}} where the selected text should go; if omitted, the selection is appended automatically.",
       cls: "setting-item-description"
     });
     this.renderPromptBuilder(containerEl.createDiv({ cls: "agenter-prompt-builder" }));
-    containerEl.createEl("h3", { text: "Tool approval" });
+    new import_obsidian2.Setting(containerEl).setName("Tool approval").setHeading();
     containerEl.createEl("p", {
       text: "Mutating tools pause and show a preview before they run. Moving a note to Trash always requires a two-step confirmation and cannot be disabled. Every note mutation also creates a recoverable safety backup inside the vault.",
       cls: "setting-item-description"
@@ -942,7 +944,7 @@ var ProviderModal = class extends import_obsidian2.Modal {
   }
   onOpen() {
     const { contentEl } = this;
-    contentEl.createEl("h3", { text: "Add provider" });
+    new import_obsidian2.Setting(contentEl).setName("Add provider").setHeading();
     const vals = {
       id: "tmp",
       name: "New Provider",
@@ -1003,8 +1005,7 @@ var ProviderModal = class extends import_obsidian2.Modal {
       })
     );
     const status = contentEl.createEl("p");
-    status.style.fontSize = "12px";
-    status.style.opacity = "0.8";
+    status.setCssStyles({ fontSize: "12px", opacity: "0.8" });
     new import_obsidian2.Setting(contentEl).addButton(
       (btn) => btn.setButtonText("Test connection & fetch models").onClick(async () => {
         btn.setDisabled(true);
@@ -2063,7 +2064,7 @@ var FloatingChatPanel = class {
     controls.addClass("agenter-controls");
     const stopBtn = mkIconBtn("square", "Stop generating", () => this.abort());
     stopBtn.addClass("agenter-stop");
-    stopBtn.style.display = "none";
+    stopBtn.setCssStyles({ display: "none" });
     const newBtn = mkIconBtn("plus", "New chat", () => this.newSession());
     const floatBtn = mkIconBtn(
       this.mode === "docked" ? "maximize-2" : "panel-right",
@@ -2485,10 +2486,10 @@ ${sel}` : sel;
     const rect = anchor.getBoundingClientRect();
     const width = 320;
     const left = Math.max(10, Math.min(rect.left, window.innerWidth - width - 10));
-    pop.style.left = `${left}px`;
+    pop.setCssStyles({ left: `${left}px` });
     const estimatedHeight = 250;
     const below = rect.bottom + 7;
-    pop.style.top = `${below + estimatedHeight > window.innerHeight ? Math.max(10, rect.top - estimatedHeight - 7) : below}px`;
+    pop.setCssStyles({ top: `${below + estimatedHeight > window.innerHeight ? Math.max(10, rect.top - estimatedHeight - 7) : below}px` });
     const close = (e) => {
       if (!pop.contains(e.target) && !anchor.contains(e.target)) {
         pop.remove();
@@ -2543,14 +2544,13 @@ ${text}` : text;
     const height = this.rootEl.offsetHeight || this.plugin.settings.panelHeight || 600;
     this.pos.x = Math.max(10, Math.min(x + 12, window.innerWidth - width - 10));
     this.pos.y = Math.max(10, Math.min(y + 12, window.innerHeight - height - 10));
-    this.rootEl.style.left = `${this.pos.x}px`;
-    this.rootEl.style.top = `${this.pos.y}px`;
+    this.rootEl.setCssStyles({ left: `${this.pos.x}px`, top: `${this.pos.y}px` });
     this.inputEl.focus();
   }
   autoGrow() {
     const el = this.inputEl;
-    el.style.height = "auto";
-    el.style.height = Math.min(el.scrollHeight, 160) + "px";
+    el.setCssStyles({ height: "auto" });
+    el.setCssStyles({ height: Math.min(el.scrollHeight, 160) + "px" });
   }
   // ----------------------------------------------------- provider menu
   refreshProviderLabel() {
@@ -2741,19 +2741,6 @@ Pick a context scope above, then ask me anything.`
       target.setText(text);
     });
   }
-  attachCopyButton(msgEl, getText) {
-    const btn = document.createElement("button");
-    btn.addClass("agenter-copy-btn");
-    safeIcon(btn, "copy");
-    btn.title = "Copy";
-    btn.addEventListener("click", async (e) => {
-      e.stopPropagation();
-      await navigator.clipboard.writeText(getText());
-      safeIcon(btn, "check");
-      window.setTimeout(() => safeIcon(btn, "copy"), 1200);
-    });
-    msgEl.appendChild(btn);
-  }
   showTyping() {
     const wrap = document.createElement("div");
     wrap.addClass("agenter-msg", "agenter-msg-assistant", "is-typing");
@@ -2769,7 +2756,10 @@ Pick a context scope above, then ask me anything.`
     bubble.appendChild(label);
     const typing = document.createElement("div");
     typing.addClass("agenter-typing");
-    typing.innerHTML = "<span></span><span></span><span></span>";
+    typing.empty();
+    typing.createSpan();
+    typing.createSpan();
+    typing.createSpan();
     bubble.appendChild(typing);
     wrap.appendChild(bubble);
     this.messagesEl.appendChild(wrap);
@@ -2863,7 +2853,8 @@ Pick a context scope above, then ask me anything.`
       head.appendChild(ico);
       const title = document.createElement("div");
       title.addClass("agenter-action-title");
-      title.innerHTML = `<strong>${meta.verb}</strong>`;
+      title.empty();
+      title.createEl("strong", { text: meta.verb });
       if (args.path) {
         const path = document.createElement("div");
         path.addClass("agenter-action-path");
@@ -3048,7 +3039,7 @@ ${text}` : text;
   toggleStop(show) {
     const header = this.rootEl.querySelector(".agenter-header");
     const stop = header?._stopBtn;
-    if (stop) stop.style.display = show ? "flex" : "none";
+    if (stop) stop.setCssStyles({ display: show ? "flex" : "none" });
   }
   // ------------------------------------------------------------ context
   buildContextNote() {
@@ -3078,9 +3069,11 @@ ${text}` : text;
     this.minimized = !this.minimized;
     this.rootEl.toggleClass("is-minimized", this.minimized);
     if (this.minimized) {
-      this.rootEl.style.height = "auto";
+      this.rootEl.setCssStyles({ height: "auto" });
     } else {
-      this.rootEl.style.height = this.mode === "floating" ? `${this.plugin.settings.panelHeight}px` : "100vh";
+      this.rootEl.setCssStyles({
+        height: this.mode === "floating" ? `${this.plugin.settings.panelHeight}px` : "100vh"
+      });
     }
   }
   makeDraggable(handle) {
@@ -3182,12 +3175,31 @@ function safeIcon(el, icon, fallback = "\u2022") {
   const path = paths[icon];
   el.empty();
   if (!path) {
-    el.textContent = fallback;
-    el.style.fontSize = "16px";
-    el.style.lineHeight = "1";
+    el.setText(fallback);
+    el.setCssStyles({ fontSize: "16px", lineHeight: "1" });
     return;
   }
-  el.innerHTML = `<svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${path}</svg>`;
+  const NS = "http://www.w3.org/2000/svg";
+  const svg = document.createElementNS(NS, "svg");
+  svg.setAttribute("viewBox", "0 0 24 24");
+  svg.setAttribute("aria-hidden", "true");
+  svg.setAttribute("fill", "none");
+  svg.setAttribute("stroke", "currentColor");
+  svg.setAttribute("stroke-width", "1.8");
+  svg.setAttribute("stroke-linecap", "round");
+  svg.setAttribute("stroke-linejoin", "round");
+  const elRe = /<([a-zA-Z]+)([^>]*?)\/?>(?:<\/[a-zA-Z]+>)?/g;
+  const attrRe = /([a-zA-Z-]+)="([^"]*)"/g;
+  let elMatch;
+  while ((elMatch = elRe.exec(path)) !== null) {
+    const child = document.createElementNS(NS, elMatch[1]);
+    let attrMatch;
+    while ((attrMatch = attrRe.exec(elMatch[2])) !== null) {
+      child.setAttribute(attrMatch[1], attrMatch[2]);
+    }
+    svg.appendChild(child);
+  }
+  el.appendChild(svg);
 }
 function mkIconBtn(icon, title, onClick) {
   const b = document.createElement("button");
@@ -3215,16 +3227,28 @@ function truncate(s, n) {
 var AGENTER_VIEW_TYPE = "agenter-chat-view";
 function safeIconHtml(el, icon) {
   const paths = {
-    sparkles: '<path d="M12 3l1.7 5.2L19 10l-5.3 1.8L12 17l-1.7-5.2L5 10l5.3-1.8z"/>',
-    x: '<path d="M6 6l12 12M18 6L6 18"/>'
+    sparkles: "M12 3l1.7 5.2L19 10l-5.3 1.8L12 17l-1.7-5.2L5 10l5.3-1.8z",
+    x: "M6 6l12 12M18 6L6 18"
   };
   el.empty();
-  const path = paths[icon];
-  if (!path) {
-    el.textContent = "\u2022";
+  const d = paths[icon];
+  if (!d) {
+    el.setText("\u2022");
     return;
   }
-  el.innerHTML = `<svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${path}</svg>`;
+  const NS = "http://www.w3.org/2000/svg";
+  const svg = document.createElementNS(NS, "svg");
+  svg.setAttribute("viewBox", "0 0 24 24");
+  svg.setAttribute("aria-hidden", "true");
+  svg.setAttribute("fill", "none");
+  svg.setAttribute("stroke", "currentColor");
+  svg.setAttribute("stroke-width", "1.8");
+  svg.setAttribute("stroke-linecap", "round");
+  svg.setAttribute("stroke-linejoin", "round");
+  const p = document.createElementNS(NS, "path");
+  p.setAttribute("d", d);
+  svg.appendChild(p);
+  el.appendChild(svg);
 }
 var AgenterChatView = class extends import_obsidian5.ItemView {
   constructor(leaf, plugin) {
@@ -3279,22 +3303,22 @@ var AgenterPlugin = class extends import_obsidian5.Plugin {
       void this.togglePanel();
     });
     this.addCommand({
-      id: "agenter-open-chat",
+      id: "open-chat",
       name: "Open chat in right sidebar",
       callback: () => void this.openDockedChat()
     });
     this.addCommand({
-      id: "agenter-open-floating-chat",
+      id: "open-floating-chat",
       name: "Open floating chat",
       callback: () => void this.openFloatingChat()
     });
     this.addCommand({
-      id: "agenter-close-chat",
+      id: "close-chat",
       name: "Close chat",
       callback: () => this.closeAllPanels()
     });
     this.addCommand({
-      id: "agenter-ai-action-on-selection",
+      id: "ai-action-on-selection",
       name: "Run AI action on selection",
       editorCallback: (editor) => {
         const sel = editor.getSelection();
@@ -3403,11 +3427,25 @@ var AgenterPlugin = class extends import_obsidian5.Plugin {
     const popover = document.createElement("div");
     popover.addClass("agenter-selection-popover", "is-contextual");
     const sourcePath = this.app.workspace.getActiveFile()?.path ?? "";
+    const renderComponent = new import_obsidian5.Component();
+    renderComponent.load();
+    let popoverWasConnected = false;
+    const lifecycleObserver = new MutationObserver(() => {
+      if (popover.isConnected) {
+        popoverWasConnected = true;
+        return;
+      }
+      if (popoverWasConnected) {
+        renderComponent.unload();
+        lifecycleObserver.disconnect();
+      }
+    });
+    lifecycleObserver.observe(document.body, { childList: true, subtree: true });
     const renderMd = (text, target) => {
       target.empty();
       target.addClass("markdown-rendered");
       target.dir = /[\u0590-\u08FF]/.test(text) ? "rtl" : "ltr";
-      import_obsidian5.MarkdownRenderer.render(this.app, text, target, sourcePath, this).catch(() => {
+      import_obsidian5.MarkdownRenderer.render(this.app, text, target, sourcePath, renderComponent).catch(() => {
         target.setText(text);
       });
     };

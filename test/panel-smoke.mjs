@@ -129,6 +129,8 @@ global.requestAnimationFrame = (cb) => setTimeout(cb, 0);
   proto.getText = function () { return this.textContent || ""; };
   proto.empty = function () { while (this.firstChild) this.removeChild(this.firstChild); return this; };
   proto.setAttr = function (k, v) { this.setAttribute(k, v); return this; };
+  proto.setCssStyles = function (styles) { for (const k in styles) { try { this.style[k] = styles[k]; } catch (e) {} } return this; };
+  proto.setCssProps = function (props) { for (const k in props) { try { this.style.setProperty(k, props[k]); } catch (e) {} } return this; };
 }
 
 try {
