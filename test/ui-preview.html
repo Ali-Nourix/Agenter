@@ -1,0 +1,182 @@
+<!doctype html>
+<html lang="fa">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Agenter UI preview</title>
+  <link rel="stylesheet" href="../styles.css">
+  <style>
+    :root {
+      --font-ui: Inter, "Segoe UI", Roboto, sans-serif;
+      --font-monospace: Consolas, monospace;
+      /* Dark theme (Obsidian default) */
+      --background-primary: #1e1e1e;
+      --background-primary-alt: #191919;
+      --background-secondary: #262626;
+      --background-modifier-border: #363636;
+      --background-modifier-hover: rgba(255,255,255,0.06);
+      --interactive-accent: #7f6df2;
+      --interactive-accent-hover: #9586f8;
+      --interactive-success: #55b982;
+      --text-normal: #e6e6e6;
+      --text-muted: #9a9a9a;
+      --text-faint: #6f6f6f;
+      --text-on-accent: #ffffff;
+      --text-warning: #e9b949;
+      --text-error: #ef6b73;
+      --shadow-l: 0 16px 48px rgba(0,0,0,0.4);
+    }
+    body.light {
+      --background-primary: #ffffff;
+      --background-primary-alt: #f7f6f4;
+      --background-secondary: #f4f3f1;
+      --background-modifier-border: #e4e2df;
+      --background-modifier-hover: rgba(0,0,0,0.045);
+      --interactive-accent: #6a58e8;
+      --interactive-accent-hover: #5847d6;
+      --text-normal: #2c2c2b;
+      --text-muted: #75726d;
+      --text-faint: #a3a09b;
+      --text-on-accent: #ffffff;
+      background: #ecebe8;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background: #141414;
+      display: flex;
+      gap: 28px;
+      align-items: flex-start;
+      justify-content: center;
+      padding: 28px;
+      color: var(--text-normal);
+      font-family: var(--font-ui);
+    }
+    .preview-shell {
+      width: 420px;
+      height: 720px;
+      flex-shrink: 0;
+      border: 1px solid var(--background-modifier-border);
+      border-radius: 12px;
+      overflow: hidden;
+      background: var(--background-primary);
+      box-shadow: 0 24px 60px rgba(0,0,0,0.35);
+    }
+    svg { fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+  </style>
+</head>
+<body>
+  <main class="preview-shell agenter-view-content">
+    <section class="agenter-root is-docked is-native-view is-busy">
+      <header class="agenter-header">
+        <div class="agenter-header-left">
+          <button class="agenter-icon-btn agenter-hamburger" aria-label="History">
+            <svg viewBox="0 0 24 24" width="16" height="16"><path d="M3 6h18M3 12h18M3 18h18"/></svg>
+          </button>
+          <div class="agenter-brand">
+            <span class="agenter-dot">
+              <svg viewBox="0 0 24 24" width="16" height="16"><path d="M12 3l1.6 4.6L18 9l-4.4 1.4L12 15l-1.6-4.6L6 9l4.4-1.4L12 3z"/><path d="M19 14l.7 2 2 .7-2 .7-.7 2-.7-2-2-.7 2-.7.7-2z"/></svg>
+            </span>
+            <div class="agenter-title-wrap">
+              <div class="agenter-title">Agenter</div>
+              <div class="agenter-subtitle">Obsidian command agent</div>
+            </div>
+          </div>
+          <button class="agenter-provider-btn">Gemini · 2.5 Flash</button>
+        </div>
+        <div class="agenter-controls">
+          <button class="agenter-icon-btn agenter-stop" aria-label="Stop">
+            <svg viewBox="0 0 24 24" width="16" height="16"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>
+          </button>
+          <button class="agenter-icon-btn" aria-label="New chat">
+            <svg viewBox="0 0 24 24" width="16" height="16"><path d="M12 5v14M5 12h14"/></svg>
+          </button>
+          <button class="agenter-icon-btn" aria-label="Float">
+            <svg viewBox="0 0 24 24" width="16" height="16"><path d="M15 3h6v6M21 3l-9 9M9 21H3v-6"/></svg>
+          </button>
+          <button class="agenter-icon-btn" aria-label="Close">
+            <svg viewBox="0 0 24 24" width="16" height="16"><path d="M18 6L6 18M6 6l12 12"/></svg>
+          </button>
+        </div>
+      </header>
+      <div class="agenter-status is-responding">
+        <span class="agenter-status-icon">
+          <svg viewBox="0 0 24 24" width="16" height="16"><path d="M21 12a9 9 0 1 1-6.2-8.5"/></svg>
+        </span>
+        <span class="agenter-status-text">Writing response</span>
+        <span class="agenter-status-meta">2.4s</span>
+      </div>
+      <div class="agenter-body">
+        <div class="agenter-chat">
+          <div class="agenter-messages">
+            <div class="agenter-msg agenter-msg-user">
+              <div class="agenter-bubble">این نوت را خلاصه کن و سه اقدام بعدی پیشنهاد بده.</div>
+            </div>
+            <div class="agenter-tool-line">
+              <div class="agenter-tool-line-head">
+                <svg viewBox="0 0 24 24" width="14" height="14"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg>
+                <span>Read current note</span>
+                <span class="agenter-tool-chevron">⌄</span>
+              </div>
+            </div>
+            <div class="agenter-msg agenter-msg-assistant">
+              <div class="agenter-avatar">A</div>
+              <div class="agenter-bubble">
+                <p><strong>خلاصه</strong></p>
+                <p>این یادداشت روی برنامه‌ریزی انتشار نسخه جدید و هماهنگی تیم تمرکز دارد.</p>
+                <p><strong>اقدام‌های بعدی</strong></p>
+                <ol>
+                  <li>مالک هر کار را مشخص کن.</li>
+                  <li>موعد بازبینی را ثبت کن.</li>
+                  <li>ریسک‌های انتشار را بررسی کن.</li>
+                </ol>
+                <p>Want me to turn these into tasks in your daily note?</p>
+              </div>
+              <button class="agenter-copy-btn" aria-label="Copy">
+                <svg viewBox="0 0 24 24" width="14" height="14"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>
+              </button>
+            </div>
+          </div>
+          <div class="agenter-input-wrap">
+            <div class="agenter-composer-toolbar">
+              <button class="agenter-context-chip" type="button">
+                <svg viewBox="0 0 24 24" width="13" height="13"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg>
+                <span>Current note</span>
+              </button>
+              <button class="agenter-icon-btn agenter-model-settings-btn" aria-label="Model settings">
+                <svg viewBox="0 0 24 24" width="16" height="16"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.6 1.6 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.6 1.6 0 0 0-2.7 1.1V21a2 2 0 1 1-4 0v-.1A1.6 1.6 0 0 0 7 19.4a1.6 1.6 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.6 1.6 0 0 0-1.1-2.7H1a2 2 0 1 1 0-4h.1A1.6 1.6 0 0 0 2.6 7a1.6 1.6 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.6 1.6 0 0 0 1.8.3H7a1.6 1.6 0 0 0 1-1.5V1a2 2 0 1 1 4 0v.1a1.6 1.6 0 0 0 2.7 1.1l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.6 1.6 0 0 0-.3 1.8V7a1.6 1.6 0 0 0 1.5 1H23a2 2 0 1 1 0 4h-.1a1.6 1.6 0 0 0-1.5 1z"/></svg>
+              </button>
+            </div>
+            <div class="agenter-input-inner">
+              <button class="agenter-inline-btn" aria-label="Insert selection">
+                <svg viewBox="0 0 24 24" width="16" height="16"><path d="M12 5v14M5 12h14"/></svg>
+              </button>
+              <textarea class="agenter-input" rows="1" placeholder="Ask Agenter…"></textarea>
+              <button class="agenter-send" aria-label="Send">
+                <svg viewBox="0 0 24 24" width="16" height="16"><path d="M12 19V5M5 12l7-7 7 7"/></svg>
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+  <script>
+    const params = new URLSearchParams(location.search);
+    if (params.has("light")) document.body.classList.add("light");
+    if (params.has("floating")) {
+      const shell = document.querySelector(".preview-shell");
+      const root = document.querySelector(".agenter-root");
+      shell.style.border = "0";
+      shell.style.boxShadow = "none";
+      shell.style.background = "transparent";
+      shell.classList.remove("agenter-view-content");
+      root.classList.remove("is-docked", "is-native-view");
+      root.classList.add("is-floating");
+      root.style.width = "420px";
+      root.style.height = "700px";
+    }
+  </script>
+</body>
+</html>

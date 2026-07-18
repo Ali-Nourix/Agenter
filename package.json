@@ -1,0 +1,32 @@
+{
+  "name": "agenter",
+  "version": "1.1.2",
+  "description": "AI agent plugin for Obsidian with multi-provider support and floating chat.",
+  "main": "main.js",
+  "scripts": {
+    "dev": "node esbuild.config.mjs",
+    "build": "tsc -noEmit -skipLibCheck && node esbuild.config.mjs production",
+    "test": "node test/run-test.mjs && node test/stream-test.mjs && node test/panel-smoke.mjs && node test/tool-flow.mjs"
+  },
+  "keywords": [
+    "obsidian",
+    "ai",
+    "agent",
+    "chat",
+    "llm"
+  ],
+  "author": "Agenter",
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "builtin-modules": "^3.3.0",
+    "esbuild": "^0.21.0",
+    "jsdom": "^29.1.1",
+    "obsidian": "https://github.com/obsidianmd/obsidian-api/tarball/master",
+    "tslib": "^2.6.0",
+    "typescript": "^5.4.0"
+  },
+  "overrides": {
+    "obsidian": "https://github.com/obsidianmd/obsidian-api/tarball/master"
+  }
+}

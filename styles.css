@@ -1,0 +1,3386 @@
+/* ============================================================
+   Agenter — modern chat UI styles
+   Rewritten to match the current ui.ts class names:
+   .agenter-root (root) + .agenter-body + .agenter-sidebar
+   + .agenter-chat columns. Uses Obsidian CSS variables so it
+   adapts to light/dark themes.
+   ============================================================ */
+
+.agenter-root {
+  --agenter-radius: 14px;
+  --agenter-accent: var(--interactive-accent);
+  --agenter-accent-hover: var(--interactive-accent-hover);
+  --agenter-bg: var(--background-primary);
+  --agenter-bg-2: var(--background-secondary);
+  --agenter-border: var(--background-modifier-border);
+  --agenter-text: var(--text-normal);
+  --agenter-muted: var(--text-muted);
+
+  font-family: var(--font-ui);
+  color: var(--agenter-text);
+  background: var(--agenter-bg);
+  border: 1px solid var(--agenter-border);
+  border-radius: var(--agenter-radius);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.45), 0 0 0 1px rgba(255, 255, 255, 0.03) inset;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  transition: box-shadow 0.18s ease;
+}
+
+/* Native ItemView host. Obsidian owns the pane size and placement. */
+.agenter-view-content {
+  padding: 0 !important;
+  overflow: hidden !important;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Overlay-style docked panel: floats above content rather than compressing the layout.
+   The host leaf still reserves its column, but the Agenter UI sits on top of whatever
+   was rendered below it so nothing else reflows. */
+.agenter-root.is-docked {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  border-radius: 0;
+  border: none;
+  box-shadow: none;
+  background: var(--background-primary);
+}
+
+.agenter-root.is-native-view {
+  border-radius: 0;
+  background: var(--background-primary);
+}
+
+/* Floating = free window, overlay on top of everything (never compresses content below). */
+.agenter-root.is-floating {
+  position: fixed !important;
+  z-index: 9999;
+  border-radius: var(--agenter-radius);
+  border: 1px solid var(--agenter-border);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.45);
+  min-width: 320px;
+  min-height: 360px;
+  background: var(--background-primary);
+}
+
+/* Minimized bubble. */
+.agenter-root.is-minimized {
+  width: auto !important;
+  height: auto !important;
+  padding: 10px 14px;
+  border-radius: 999px;
+  cursor: pointer;
+  border-radius: 999px;
+}
+.agenter-root.is-minimized .agenter-body,
+.agenter-root.is-minimized .agenter-input-wrap {
+  display: none !important;
+}
+.agenter-root.is-minimized .agenter-header {
+  border-bottom: none;
+  padding: 0;
+  background: transparent;
+}
+
+/* Body = sidebar + chat column. */
+.agenter-body {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* Sidebar (session list). */
+.agenter-sidebar {
+  width: 220px;
+  flex-shrink: 0;
+  border-right: 1px solid var(--agenter-border);
+  background: var(--agenter-bg-2);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.agenter-root:not(.is-sidebar-open) .agenter-sidebar {
+  display: none;
+}
+.agenter-sidebar-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px;
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--agenter-muted);
+  border-bottom: 1px solid var(--agenter-border);
+}
+.agenter-session-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.agenter-session-empty {
+  font-size: 12px;
+  color: var(--agenter-muted);
+  text-align: center;
+  padding: 16px 8px;
+}
+.agenter-session-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--agenter-bg);
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition: border-color 0.12s, background 0.12s;
+}
+.agenter-session-item:hover {
+  border-color: var(--agenter-border);
+}
+.agenter-session-item.is-active {
+  border-color: var(--agenter-accent);
+  background: var(--agenter-bg-2);
+}
+.agenter-session-label {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.agenter-session-title {
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.agenter-session-meta {
+  font-size: 11px;
+  color: var(--agenter-muted);
+}
+.agenter-session-actions {
+  display: flex;
+  gap: 2px;
+  opacity: 0;
+  transition: opacity 0.12s;
+}
+.agenter-session-item:hover .agenter-session-actions {
+  opacity: 1;
+}
+.agenter-rename-input {
+  width: 100%;
+  font-size: 13px;
+  background: var(--agenter-bg);
+  color: var(--agenter-text);
+  border: 1px solid var(--agenter-accent);
+  border-radius: 6px;
+  padding: 4px 6px;
+  outline: none;
+}
+
+/* Chat column. */
+.agenter-chat {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  overflow: hidden;
+}
+
+/* Header. */
+.agenter-header {
+  cursor: default;
+  padding: 11px 14px;
+  background: linear-gradient(180deg, var(--agenter-bg-2), var(--agenter-bg));
+  border-bottom: 1px solid var(--agenter-border);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  user-select: none;
+  flex-shrink: 0;
+}
+.agenter-root.is-floating .agenter-header { cursor: move; }
+.agenter-header-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.agenter-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--agenter-accent);
+  box-shadow: 0 0 8px var(--agenter-accent);
+  flex-shrink: 0;
+}
+.agenter-controls {
+  display: flex;
+  gap: 4px;
+  flex-shrink: 0;
+}
+.agenter-icon-btn {
+  appearance: none;
+  background: transparent;
+  color: var(--agenter-muted);
+  border: none;
+  border-radius: 6px;
+  width: 26px;
+  height: 26px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.12s, color 0.12s;
+}
+.agenter-icon-btn svg,
+.agenter-inline-btn svg,
+.agenter-send svg,
+.agenter-status-icon svg,
+.agenter-avatar svg,
+.agenter-tool-line svg,
+.agenter-action-icon svg {
+  width: 16px;
+  height: 16px;
+  stroke-width: 2;
+  flex-shrink: 0;
+}
+.agenter-icon-btn:hover {
+  background: var(--agenter-bg);
+  color: var(--agenter-text);
+}
+.agenter-hamburger {
+  color: var(--agenter-muted);
+}
+.agenter-stop {
+  color: var(--agenter-accent) !important;
+}
+
+/* Provider selector button. */
+.agenter-provider-btn {
+  background: var(--agenter-bg);
+  color: var(--agenter-text);
+  border: 1px solid var(--agenter-border);
+  border-radius: 999px;
+  padding: 2px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transition: border-color 0.12s, background 0.12s;
+}
+.agenter-provider-btn:hover {
+  border-color: var(--agenter-accent);
+}
+.agenter-provider-btn::after {
+  content: " ▾";
+  opacity: 0.5;
+  font-size: 9px;
+}
+
+/* Live request state. This stays visible while the model or a tool is busy. */
+.agenter-status {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 28px;
+  padding: 5px 12px;
+  border-bottom: 1px solid var(--agenter-border);
+  color: var(--agenter-muted);
+  font-size: 11px;
+  flex-shrink: 0;
+}
+.agenter-status-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  color: var(--agenter-muted);
+}
+.agenter-status-text { font-weight: 600; color: var(--agenter-text); }
+.agenter-status-meta {
+  margin-left: auto;
+  color: var(--agenter-muted);
+  font-variant-numeric: tabular-nums;
+}
+.agenter-status.is-thinking,
+.agenter-status.is-responding,
+.agenter-status.is-tool,
+.agenter-status.is-approval {
+  background: color-mix(in srgb, var(--agenter-accent) 7%, var(--agenter-bg));
+}
+.agenter-status.is-thinking .agenter-status-icon,
+.agenter-status.is-responding .agenter-status-icon,
+.agenter-status.is-tool .agenter-status-icon {
+  color: var(--agenter-accent);
+}
+.agenter-status.is-approval .agenter-status-icon { color: var(--text-warning); }
+.agenter-status.is-error .agenter-status-icon { color: var(--text-error); }
+.agenter-status.is-done .agenter-status-icon { color: var(--interactive-success); }
+.agenter-status.is-thinking .agenter-status-icon svg,
+.agenter-status.is-responding .agenter-status-icon svg,
+.agenter-status.is-tool .agenter-status-icon svg {
+  animation: agenter-spin 0.9s linear infinite;
+}
+@keyframes agenter-spin { to { transform: rotate(360deg); } }
+
+/* Scope bar. */
+.agenter-scope {
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--agenter-border);
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  flex-wrap: wrap;
+  background: var(--agenter-bg-2);
+  flex-shrink: 0;
+}
+.agenter-scope-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--agenter-muted);
+  margin-right: 2px;
+}
+.agenter-scope-btn {
+  background: var(--agenter-bg);
+  color: var(--agenter-text);
+  border: 1px solid var(--agenter-border);
+  border-radius: 999px;
+  padding: 3px 10px;
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.12s;
+}
+.agenter-scope-btn:hover {
+  border-color: var(--agenter-accent);
+}
+.agenter-scope-btn.is-active {
+  background: var(--agenter-accent);
+  color: var(--text-on-accent);
+  border-color: var(--agenter-accent);
+}
+
+/* Messages. */
+.agenter-messages {
+  flex: 1;
+  overflow-y: auto;
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  scroll-behavior: smooth;
+  min-height: 0;
+}
+.agenter-msg {
+  max-width: 92%;
+  padding: 10px 13px;
+  border-radius: 14px;
+  line-height: 1.55;
+  font-size: 14px;
+  word-break: break-word;
+  white-space: normal;
+  animation: agenter-fade 0.18s ease;
+  position: relative;
+}
+@keyframes agenter-fade {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.agenter-msg-user {
+  align-self: flex-end;
+  background: var(--agenter-accent);
+  color: var(--text-on-accent);
+  border-bottom-right-radius: 4px;
+  max-width: 86%;
+}
+.agenter-msg-user .agenter-avatar { display: none; }
+.agenter-msg-user .agenter-bubble { }
+.agenter-msg-assistant {
+  align-self: flex-start;
+  background: var(--agenter-bg-2);
+  border: 1px solid var(--agenter-border);
+  border-bottom-left-radius: 4px;
+  display: flex;
+  gap: 8px;
+}
+.agenter-msg-system {
+  align-self: center;
+  background: var(--agenter-bg-2);
+  color: var(--agenter-muted);
+  font-size: 12px;
+  text-align: center;
+  max-width: 100%;
+  border-radius: 8px;
+  padding: 6px 12px;
+}
+.agenter-avatar {
+  flex-shrink: 0;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: var(--agenter-accent);
+  color: var(--text-on-accent);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-top: 2px;
+}
+.agenter-bubble {
+  flex: 1;
+  min-width: 0;
+}
+.agenter-bubble p { margin: 0 0 8px; }
+.agenter-bubble p:last-child { margin-bottom: 0; }
+.agenter-bubble pre {
+  background: var(--background-primary-alt, var(--agenter-bg));
+  border: 1px solid var(--agenter-border);
+  border-radius: 8px;
+  padding: 10px;
+  overflow-x: auto;
+}
+.agenter-bubble code {
+  font-family: var(--font-monospace);
+  font-size: 0.9em;
+  background: rgba(127, 127, 127, 0.15);
+  padding: 1px 4px;
+  border-radius: 4px;
+}
+.agenter-bubble pre code {
+  background: transparent;
+  padding: 0;
+}
+.agenter-copy-btn {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  background: var(--agenter-bg);
+  border: 1px solid var(--agenter-border);
+  border-radius: 6px;
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  opacity: 1;
+  transition: background 0.12s, border-color 0.12s, transform 0.06s;
+  color: var(--text-normal);
+}
+.agenter-copy-btn:hover {
+  background: var(--agenter-bg-2);
+  border-color: var(--agenter-accent);
+}
+.agenter-copy-btn:active {
+  transform: scale(0.92);
+}
+
+/* Typing indicator. */
+.agenter-typing {
+  display: inline-flex;
+  gap: 4px;
+  padding: 4px 2px;
+}
+.agenter-typing-label {
+  display: block;
+  margin-bottom: 3px;
+  color: var(--agenter-muted);
+  font-size: 12px;
+}
+.agenter-typing span {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--agenter-muted);
+  animation: agenter-bounce 1.2s infinite ease-in-out;
+}
+.agenter-typing span:nth-child(2) { animation-delay: 0.15s; }
+.agenter-typing span:nth-child(3) { animation-delay: 0.3s; }
+@keyframes agenter-bounce {
+  0%, 60%, 100% { transform: translateY(0); opacity: 0.4; }
+  30% { transform: translateY(-4px); opacity: 1; }
+}
+
+/* Tool line (non-mutating tool result). */
+.agenter-tool-line {
+  align-self: stretch;
+  background: var(--agenter-bg-2);
+  border-left: 3px solid var(--agenter-accent);
+  border-radius: 8px;
+  padding: 6px 10px;
+  font-size: 12px;
+  color: var(--agenter-muted);
+  cursor: pointer;
+}
+.agenter-tool-line-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 600;
+  color: var(--agenter-text);
+}
+.agenter-tool-line-body {
+  margin-top: 4px;
+  font-family: var(--font-monospace);
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 0;
+  overflow: hidden;
+  transition: max-height 0.2s ease;
+  opacity: 0.85;
+  font-size: 11.5px;
+  line-height: 1.45;
+}
+.agenter-tool-line.is-open .agenter-tool-line-body {
+  max-height: 400px;
+  overflow-y: auto;
+}
+.agenter-tool-chevron {
+  margin-left: auto;
+  transition: transform 0.2s ease;
+}
+.agenter-tool-line.is-open .agenter-tool-chevron {
+  transform: rotate(180deg);
+}
+
+/* Action approval card. */
+.agenter-action-card {
+  align-self: stretch;
+  background: var(--agenter-bg-2);
+  border: 1px solid var(--agenter-accent);
+  border-radius: 10px;
+  padding: 10px 12px;
+  font-size: 13px;
+  animation: agenter-fade 0.18s ease;
+}
+.agenter-action-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+}
+.agenter-action-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--agenter-accent);
+}
+.agenter-action-title {
+  display: flex;
+  flex-direction: column;
+}
+.agenter-action-path {
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--agenter-muted);
+  font-family: var(--font-monospace);
+  word-break: break-all;
+}
+.agenter-action-preview {
+  margin: 8px 0;
+  background: var(--background-primary-alt, var(--agenter-bg));
+  border: 1px solid var(--agenter-border);
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-family: var(--font-monospace);
+  font-size: 11.5px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 200px;
+  overflow: auto;
+  color: var(--agenter-text);
+}
+.agenter-action-buttons {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+.agenter-action-approve,
+.agenter-action-reject {
+  border: none;
+  border-radius: 8px;
+  padding: 6px 16px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: filter 0.12s;
+}
+.agenter-action-approve {
+  background: var(--agenter-accent);
+  color: var(--text-on-accent);
+}
+.agenter-action-reject {
+  background: var(--background-modifier-error);
+  color: var(--text-on-accent);
+}
+.agenter-action-approve:hover,
+.agenter-action-reject:hover {
+  filter: brightness(1.08);
+}
+.agenter-action-status {
+  margin-top: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  text-align: right;
+}
+.agenter-action-status.is-approved { color: var(--interactive-success, #4caf50); }
+.agenter-action-status.is-rejected { color: var(--text-error, #e57373); }
+.agenter-action-card.is-approved { border-color: var(--interactive-success, #4caf50); }
+.agenter-action-card.is-rejected { border-color: var(--text-error, #e57373); }
+
+/* Input area. */
+.agenter-input-wrap {
+  border-top: 1px solid var(--agenter-border);
+  padding: 10px;
+  background: linear-gradient(180deg, var(--agenter-bg-2), var(--agenter-bg));
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.agenter-composer-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.agenter-composer-hint {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--agenter-muted);
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.45px;
+  white-space: nowrap;
+}
+.agenter-composer-hint svg,
+.agenter-tool-chip svg {
+  width: 14px;
+  height: 14px;
+}
+.agenter-tool-chips {
+  display: flex;
+  justify-content: flex-end;
+  gap: 5px;
+  overflow-x: auto;
+  min-width: 0;
+}
+.agenter-tool-chip {
+  appearance: none;
+  border: 1px solid var(--agenter-border);
+  background: color-mix(in srgb, var(--agenter-bg) 78%, var(--agenter-accent));
+  color: var(--agenter-text);
+  border-radius: 999px;
+  height: 26px;
+  padding: 0 9px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  flex-shrink: 0;
+  transition: border-color 0.12s, background 0.12s, transform 0.06s;
+}
+.agenter-tool-chip:hover {
+  border-color: var(--agenter-accent);
+  background: color-mix(in srgb, var(--agenter-bg) 58%, var(--agenter-accent));
+}
+.agenter-tool-chip:active {
+  transform: translateY(1px);
+}
+.agenter-input-inner {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  background: var(--agenter-bg);
+  border: 1px solid var(--agenter-border);
+  border-radius: 16px;
+  padding: 7px 7px 7px 10px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+  transition: border-color 0.12s, box-shadow 0.12s;
+}
+.agenter-input-inner:focus-within {
+  border-color: var(--agenter-accent);
+}
+.agenter-inline-btn {
+  background: transparent;
+  color: var(--agenter-muted);
+  border: none;
+  border-radius: 8px;
+  width: 34px;
+  height: 34px;
+  flex-shrink: 0;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: color 0.12s, background 0.12s;
+}
+.agenter-inline-btn:hover {
+  color: var(--agenter-text);
+  background: var(--agenter-bg-2);
+}
+.agenter-input {
+  flex: 1;
+  resize: none;
+  height: 34px;
+  max-height: 160px;
+  background: transparent;
+  color: var(--agenter-text);
+  border: none;
+  font-family: var(--font-ui);
+  font-size: 14px;
+  line-height: 1.4;
+  outline: none;
+  padding: 7px 0;
+}
+.agenter-input::placeholder {
+  color: var(--agenter-muted);
+}
+.agenter-send {
+  background: var(--agenter-accent);
+  color: var(--text-on-accent);
+  border: none;
+  border-radius: 10px;
+  padding: 0 14px;
+  height: 34px;
+  font-weight: 600;
+  font-size: 14px;
+  cursor: pointer;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: filter 0.12s, transform 0.05s;
+}
+.agenter-send:hover { filter: brightness(1.08); }
+.agenter-send:active { transform: scale(0.97); }
+.agenter-send:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.agenter-root.is-busy .agenter-dot {
+  animation: agenter-pulse 1.2s ease-in-out infinite;
+}
+@keyframes agenter-pulse {
+  0%, 100% { opacity: 0.45; transform: scale(0.85); }
+  50% { opacity: 1; transform: scale(1); }
+}
+
+/* Scrollbar. */
+.agenter-messages::-webkit-scrollbar,
+.agenter-session-list::-webkit-scrollbar { width: 8px; }
+.agenter-messages::-webkit-scrollbar-thumb,
+.agenter-session-list::-webkit-scrollbar-thumb {
+  background: var(--agenter-border);
+  border-radius: 4px;
+}
+.agenter-messages::-webkit-scrollbar-thumb:hover,
+.agenter-session-list::-webkit-scrollbar-thumb:hover {
+  background: var(--agenter-muted);
+}
+
+/* Command-center redesign inspired by Linear/Raycast. */
+.agenter-root {
+  --agenter-radius: 18px;
+  --agenter-accent: var(--interactive-accent, #7170ff);
+  --agenter-accent-soft: color-mix(in srgb, var(--agenter-accent) 18%, transparent);
+  --agenter-bg: color-mix(in srgb, var(--background-primary) 92%, #08090a);
+  --agenter-bg-2: color-mix(in srgb, var(--background-secondary) 86%, #101111);
+  --agenter-surface: color-mix(in srgb, var(--background-secondary) 78%, #191a1b);
+  --agenter-border: color-mix(in srgb, var(--background-modifier-border) 65%, rgba(255,255,255,0.14));
+  --agenter-text: var(--text-normal, #f7f8f8);
+  --agenter-muted: var(--text-muted, #8a8f98);
+  font-feature-settings: "cv01", "ss03", "kern", "liga";
+  background:
+    radial-gradient(circle at 20% 0%, var(--agenter-accent-soft), transparent 38%),
+    linear-gradient(180deg, color-mix(in srgb, var(--agenter-bg-2) 76%, #07080a), var(--agenter-bg));
+  border-color: var(--agenter-border);
+  box-shadow:
+    0 22px 70px rgba(0, 0, 0, 0.42),
+    0 0 0 1px rgba(255, 255, 255, 0.045) inset;
+}
+.agenter-root.is-docked {
+  background: linear-gradient(180deg, var(--agenter-bg), color-mix(in srgb, var(--agenter-bg) 90%, #07080a));
+}
+.agenter-header {
+  min-height: 58px;
+  padding: 10px 12px;
+  background: rgba(255, 255, 255, 0.025);
+  backdrop-filter: blur(18px);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+.agenter-header-left { gap: 10px; }
+.agenter-brand {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+.agenter-title-wrap {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.agenter-title {
+  color: var(--agenter-text);
+  font-size: 14px;
+  font-weight: 650;
+  letter-spacing: -0.18px;
+}
+.agenter-subtitle {
+  color: var(--agenter-muted);
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.15px;
+  white-space: nowrap;
+}
+.agenter-dot {
+  width: 28px;
+  height: 28px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 10px;
+  background:
+    radial-gradient(circle at 35% 20%, rgba(255,255,255,0.25), transparent 35%),
+    linear-gradient(135deg, var(--agenter-accent), color-mix(in srgb, var(--agenter-accent) 45%, #07080a));
+  color: var(--text-on-accent, #fff);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 0 24px var(--agenter-accent-soft), 0 1px 0 rgba(255,255,255,0.1) inset;
+}
+.agenter-dot svg { width: 15px; height: 15px; }
+.agenter-icon-btn {
+  width: 30px;
+  height: 30px;
+  color: var(--agenter-muted);
+  border: 1px solid transparent;
+  border-radius: 10px;
+  background: transparent;
+}
+.agenter-icon-btn:hover {
+  color: var(--agenter-text);
+  background: rgba(255,255,255,0.045);
+  border-color: rgba(255,255,255,0.07);
+}
+.agenter-provider-btn {
+  max-width: 135px;
+  height: 28px;
+  padding: 0 10px;
+  color: var(--agenter-text);
+  background: rgba(255, 255, 255, 0.04);
+  border-color: rgba(255, 255, 255, 0.08);
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 600;
+}
+.agenter-status {
+  min-height: 30px;
+  padding: 6px 13px;
+  background: rgba(255,255,255,0.018);
+  border-bottom: 1px solid rgba(255,255,255,0.055);
+}
+.agenter-status.is-thinking,
+.agenter-status.is-responding,
+.agenter-status.is-tool,
+.agenter-status.is-approval {
+  background: linear-gradient(90deg, var(--agenter-accent-soft), transparent);
+}
+.agenter-command-panel {
+  padding: 12px;
+  border-bottom: 1px solid rgba(255,255,255,0.055);
+  background:
+    radial-gradient(circle at 10% 0%, var(--agenter-accent-soft), transparent 42%),
+    color-mix(in srgb, var(--agenter-bg) 92%, #07080a);
+  flex-shrink: 0;
+}
+.agenter-command-top {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+.agenter-overline {
+  color: var(--agenter-muted);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.7px;
+  text-transform: uppercase;
+}
+.agenter-command-title {
+  margin-top: 2px;
+  color: var(--agenter-text);
+  font-size: 18px;
+  line-height: 1.05;
+  font-weight: 650;
+  letter-spacing: -0.45px;
+}
+.agenter-scope {
+  padding: 0;
+  border: none;
+  background: transparent;
+  justify-content: flex-end;
+}
+.agenter-scope-label {
+  margin-right: 0;
+  font-size: 10px;
+  letter-spacing: 0.55px;
+}
+.agenter-scope-btn {
+  height: 24px;
+  padding: 0 9px;
+  color: var(--agenter-muted);
+  background: rgba(255,255,255,0.03);
+  border-color: rgba(255,255,255,0.07);
+  border-radius: 8px;
+  font-size: 11px;
+  font-weight: 600;
+}
+.agenter-scope-btn.is-active {
+  color: var(--text-on-accent, #fff);
+  background: var(--agenter-accent);
+  border-color: color-mix(in srgb, var(--agenter-accent) 70%, #fff);
+  box-shadow: 0 0 18px var(--agenter-accent-soft);
+}
+.agenter-capability-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 7px;
+}
+.agenter-capability-card {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 8px;
+  border: 1px solid rgba(255,255,255,0.07);
+  border-radius: 12px;
+  background: rgba(255,255,255,0.025);
+  box-shadow: 0 1px 0 rgba(255,255,255,0.04) inset;
+}
+.agenter-capability-icon {
+  width: 24px;
+  height: 24px;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+  color: var(--agenter-accent);
+  background: var(--agenter-accent-soft);
+}
+.agenter-capability-icon svg { width: 14px; height: 14px; }
+.agenter-capability-title {
+  color: var(--agenter-text);
+  font-size: 11px;
+  font-weight: 650;
+  line-height: 1.15;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.agenter-capability-desc {
+  margin-top: 2px;
+  color: var(--agenter-muted);
+  font-size: 9.5px;
+  line-height: 1.15;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.agenter-messages {
+  padding: 16px 14px;
+  gap: 14px;
+  background:
+    linear-gradient(rgba(255,255,255,0.018) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255,255,255,0.014) 1px, transparent 1px);
+  background-size: 28px 28px;
+}
+.agenter-msg {
+  padding: 0;
+  border-radius: 0;
+  background: transparent;
+  line-height: 1.55;
+  font-size: 13.5px;
+}
+.agenter-msg-user,
+.agenter-msg-assistant {
+  border: none;
+  background: transparent;
+}
+.agenter-msg-user .agenter-bubble,
+.agenter-msg-assistant .agenter-bubble {
+  padding: 11px 13px;
+  border: 1px solid rgba(255,255,255,0.075);
+  border-radius: 15px;
+  box-shadow: 0 1px 0 rgba(255,255,255,0.04) inset;
+}
+.agenter-msg-user .agenter-bubble {
+  color: var(--text-on-accent, #fff);
+  background: linear-gradient(135deg, var(--agenter-accent), color-mix(in srgb, var(--agenter-accent) 72%, #07080a));
+  border-color: color-mix(in srgb, var(--agenter-accent) 65%, #fff);
+  border-bottom-right-radius: 5px;
+}
+.agenter-msg-assistant .agenter-bubble {
+  color: var(--agenter-text);
+  background: rgba(255,255,255,0.035);
+  border-bottom-left-radius: 5px;
+}
+.agenter-avatar {
+  width: 28px;
+  height: 28px;
+  background: rgba(255,255,255,0.055);
+  color: var(--agenter-accent);
+  border: 1px solid rgba(255,255,255,0.08);
+}
+.agenter-copy-btn {
+  top: -6px;
+  right: -6px;
+  background: var(--agenter-surface);
+  border-color: rgba(255,255,255,0.12);
+  border-radius: 9px;
+}
+.agenter-tool-line,
+.agenter-action-card {
+  background: rgba(255,255,255,0.035);
+  border-color: rgba(255,255,255,0.08);
+  border-left-color: var(--agenter-accent);
+  box-shadow: 0 1px 0 rgba(255,255,255,0.04) inset;
+}
+.agenter-input-wrap {
+  padding: 12px;
+  background:
+    radial-gradient(circle at 90% 10%, var(--agenter-accent-soft), transparent 34%),
+    rgba(255,255,255,0.022);
+  border-top: 1px solid rgba(255,255,255,0.06);
+}
+.agenter-composer-toolbar {
+  padding: 8px;
+  border: 1px solid rgba(255,255,255,0.07);
+  border-radius: 14px;
+  background: rgba(255,255,255,0.026);
+}
+.agenter-tool-chip {
+  height: 28px;
+  padding: 0 10px;
+  color: var(--agenter-text);
+  background: rgba(255,255,255,0.035);
+  border-color: rgba(255,255,255,0.08);
+  border-radius: 10px;
+  box-shadow: 0 1px 0 rgba(255,255,255,0.04) inset;
+}
+.agenter-tool-chip:hover {
+  background: var(--agenter-accent-soft);
+  border-color: color-mix(in srgb, var(--agenter-accent) 55%, rgba(255,255,255,0.1));
+}
+.agenter-input-inner {
+  min-height: 48px;
+  padding: 7px;
+  background: color-mix(in srgb, var(--agenter-bg) 88%, #07080a);
+  border-color: rgba(255,255,255,0.1);
+  border-radius: 16px;
+  box-shadow:
+    0 12px 32px rgba(0, 0, 0, 0.18),
+    0 1px 0 rgba(255,255,255,0.06) inset;
+}
+.agenter-input-inner:focus-within {
+  border-color: color-mix(in srgb, var(--agenter-accent) 58%, #fff);
+  box-shadow: 0 0 0 3px var(--agenter-accent-soft), 0 12px 32px rgba(0,0,0,0.18);
+}
+.agenter-inline-btn,
+.agenter-send {
+  width: 34px;
+  height: 34px;
+  border-radius: 11px;
+}
+.agenter-send {
+  padding: 0;
+  background: var(--agenter-accent);
+  box-shadow: 0 0 18px var(--agenter-accent-soft), 0 1px 0 rgba(255,255,255,0.14) inset;
+}
+.agenter-input {
+  min-height: 34px;
+  font-size: 13.5px;
+}
+
+/* Copilot-style reset: native Obsidian chat, compact controls, no hero/dashboard chrome. */
+.agenter-root {
+  --agenter-radius: 10px;
+  --agenter-accent: var(--interactive-accent);
+  --agenter-accent-soft: color-mix(in srgb, var(--interactive-accent) 12%, transparent);
+  --agenter-bg: var(--background-primary);
+  --agenter-bg-2: var(--background-secondary);
+  --agenter-surface: var(--background-primary-alt, var(--background-secondary));
+  --agenter-border: var(--background-modifier-border);
+  --agenter-text: var(--text-normal);
+  --agenter-muted: var(--text-muted);
+  font-family: var(--font-ui);
+  font-feature-settings: normal;
+  background: var(--agenter-bg);
+  border-color: var(--agenter-border);
+  box-shadow: none;
+}
+.agenter-root.is-floating {
+  box-shadow: var(--shadow-l, 0 16px 48px rgba(0,0,0,0.35));
+}
+.agenter-header {
+  min-height: 42px;
+  padding: 6px 8px;
+  background: var(--agenter-bg);
+  backdrop-filter: none;
+  border-bottom: 1px solid var(--agenter-border);
+}
+.agenter-header-left {
+  gap: 6px;
+}
+.agenter-brand {
+  gap: 6px;
+}
+.agenter-dot {
+  width: 18px;
+  height: 18px;
+  border: none;
+  border-radius: 5px;
+  color: var(--agenter-accent);
+  background: transparent;
+  box-shadow: none;
+}
+.agenter-dot svg {
+  width: 15px;
+  height: 15px;
+}
+.agenter-title {
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0;
+}
+.agenter-subtitle {
+  display: none;
+}
+.agenter-icon-btn {
+  width: 28px;
+  height: 28px;
+  border: none;
+  border-radius: 6px;
+  color: var(--text-muted);
+  background: transparent;
+}
+.agenter-icon-btn:hover {
+  color: var(--text-normal);
+  background: var(--background-modifier-hover);
+  border-color: transparent;
+}
+.agenter-provider-btn {
+  max-width: 150px;
+  height: 26px;
+  padding: 0 8px;
+  color: var(--text-muted);
+  background: transparent;
+  border: 1px solid var(--agenter-border);
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 500;
+}
+.agenter-provider-btn:hover {
+  color: var(--text-normal);
+  background: var(--background-modifier-hover);
+}
+.agenter-status {
+  min-height: 26px;
+  padding: 4px 10px;
+  background: var(--background-secondary);
+  border-bottom: 1px solid var(--agenter-border);
+  font-size: 11px;
+}
+.agenter-status.is-thinking,
+.agenter-status.is-responding,
+.agenter-status.is-tool,
+.agenter-status.is-approval {
+  background: var(--background-secondary);
+}
+.agenter-status-text {
+  font-weight: 500;
+}
+.agenter-command-panel,
+.agenter-capability-grid {
+  display: none !important;
+}
+.agenter-context-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 10px;
+  background: var(--background-secondary);
+  border-bottom: 1px solid var(--agenter-border);
+  flex-shrink: 0;
+}
+.agenter-scope,
+.agenter-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  overflow-x: auto;
+  flex-wrap: nowrap;
+}
+.agenter-scope-label {
+  flex-shrink: 0;
+  margin: 0 2px 0 0;
+  color: var(--text-faint, var(--text-muted));
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+.agenter-scope-btn,
+.agenter-tool-toggle,
+.agenter-tool-chip {
+  flex-shrink: 0;
+  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 0 8px;
+  color: var(--text-muted);
+  background: var(--background-primary);
+  border: 1px solid var(--agenter-border);
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 500;
+  white-space: nowrap;
+  box-shadow: none;
+}
+.agenter-scope-btn:hover,
+.agenter-tool-toggle:hover,
+.agenter-tool-chip:hover {
+  color: var(--text-normal);
+  background: var(--background-modifier-hover);
+  border-color: var(--agenter-border);
+}
+.agenter-scope-btn.is-active {
+  color: var(--text-on-accent);
+  background: var(--agenter-accent);
+  border-color: var(--agenter-accent);
+  box-shadow: none;
+}
+.agenter-tool-toggle svg,
+.agenter-tool-chip svg {
+  width: 13px;
+  height: 13px;
+}
+.agenter-messages {
+  flex: 1;
+  padding: 12px 12px 8px;
+  gap: 14px;
+  background: var(--agenter-bg);
+  background-size: auto;
+}
+.agenter-msg {
+  max-width: 100%;
+  padding: 0;
+  background: transparent;
+  border-radius: 0;
+  font-size: 13px;
+  line-height: 1.5;
+}
+.agenter-msg-user {
+  align-self: stretch;
+  max-width: 100%;
+  color: var(--text-normal);
+  background: transparent;
+}
+.agenter-msg-assistant {
+  align-self: stretch;
+  display: flex;
+  gap: 8px;
+  max-width: 100%;
+  background: transparent;
+  border: none;
+}
+.agenter-msg-user .agenter-bubble,
+.agenter-msg-assistant .agenter-bubble {
+  padding: 8px 10px;
+  border: none;
+  border-radius: 8px;
+  box-shadow: none;
+}
+.agenter-msg-user .agenter-bubble {
+  margin-left: 32px;
+  color: var(--text-normal);
+  background: var(--background-secondary);
+  border-bottom-right-radius: 8px;
+}
+.agenter-msg-assistant .agenter-bubble {
+  color: var(--text-normal);
+  background: transparent;
+  border-bottom-left-radius: 8px;
+}
+.agenter-avatar {
+  width: 24px;
+  height: 24px;
+  margin-top: 2px;
+  color: var(--text-muted);
+  background: var(--background-secondary);
+  border: 1px solid var(--agenter-border);
+}
+.agenter-copy-btn {
+  top: 2px;
+  right: 2px;
+  width: 22px;
+  height: 22px;
+  color: var(--text-muted);
+  background: transparent;
+  border: none;
+  border-radius: 5px;
+}
+.agenter-copy-btn:hover {
+  color: var(--text-normal);
+  background: var(--background-modifier-hover);
+}
+.agenter-tool-line {
+  margin-left: 32px;
+  padding: 6px 8px;
+  color: var(--text-muted);
+  background: var(--background-secondary);
+  border: 1px solid var(--agenter-border);
+  border-left: 2px solid var(--agenter-accent);
+  border-radius: 7px;
+  box-shadow: none;
+}
+.agenter-tool-line-head {
+  font-size: 12px;
+  font-weight: 500;
+}
+.agenter-action-card {
+  margin-left: 32px;
+  padding: 10px;
+  background: var(--background-secondary);
+  border: 1px solid var(--agenter-border);
+  border-left: 2px solid var(--agenter-accent);
+  border-radius: 8px;
+  box-shadow: none;
+}
+.agenter-input-wrap {
+  padding: 8px 10px 10px;
+  background: var(--agenter-bg);
+  border-top: 1px solid var(--agenter-border);
+  gap: 6px;
+}
+.agenter-composer-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0;
+  background: transparent;
+  border: none;
+  border-radius: 0;
+}
+.agenter-composer-hint {
+  color: var(--text-faint, var(--text-muted));
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+.agenter-tool-chips {
+  justify-content: flex-start;
+}
+.agenter-input-inner {
+  min-height: 42px;
+  padding: 5px;
+  gap: 5px;
+  background: var(--background-secondary);
+  border: 1px solid var(--agenter-border);
+  border-radius: 8px;
+  box-shadow: none;
+}
+.agenter-input-inner:focus-within {
+  border-color: var(--interactive-accent);
+  box-shadow: 0 0 0 1px var(--interactive-accent);
+}
+.agenter-inline-btn,
+.agenter-send {
+  width: 30px;
+  height: 30px;
+  border-radius: 6px;
+}
+.agenter-inline-btn {
+  color: var(--text-muted);
+  background: transparent;
+}
+.agenter-inline-btn:hover {
+  color: var(--text-normal);
+  background: var(--background-modifier-hover);
+}
+.agenter-send {
+  padding: 0;
+  color: var(--text-on-accent);
+  background: var(--interactive-accent);
+  box-shadow: none;
+}
+.agenter-input {
+  height: 30px;
+  min-height: 30px;
+  max-height: 140px;
+  color: var(--text-normal);
+  font-size: 13px;
+  line-height: 1.4;
+  padding: 6px 0;
+}
+
+/* Provider settings blocks (settings tab). */
+.agenter-provider-block {
+  background: var(--agenter-bg);
+}
+
+/* Composer context chip + model settings button (Copilot-style composer controls). */
+.agenter-context-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 26px;
+  padding: 0 10px;
+  color: var(--text-normal);
+  background: var(--background-secondary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 500;
+  cursor: pointer;
+  white-space: nowrap;
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.agenter-context-chip:hover {
+  background: var(--background-modifier-hover);
+  border-color: var(--interactive-accent);
+}
+.agenter-context-chip svg {
+  width: 13px;
+  height: 13px;
+  color: var(--interactive-accent);
+  flex-shrink: 0;
+}
+.agenter-context-chip span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.agenter-model-settings-btn {
+  margin-left: auto;
+  color: var(--text-muted);
+}
+
+/* Selection AI popover — appears near the cursor when user selects text
+   and triggers an AI action. Overlay (z-index high) so it sits above content. */
+.agenter-selection-popover {
+  position: fixed;
+  z-index: 10000;
+  width: 300px;
+  background: var(--background-primary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 10px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.35);
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-family: var(--font-ui);
+  color: var(--text-normal);
+}
+.agenter-selection-popover-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-normal);
+}
+.agenter-selection-popover-head svg {
+  width: 14px;
+  height: 14px;
+  color: var(--interactive-accent);
+}
+.agenter-selection-popover-head span {
+  flex: 1;
+}
+.agenter-selection-popover-close {
+  width: 22px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  border-radius: 5px;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+.agenter-selection-popover-close:hover {
+  color: var(--text-normal);
+  background: var(--background-modifier-hover);
+}
+.agenter-selection-popover-close svg {
+  width: 13px;
+  height: 13px;
+}
+.agenter-selection-preview {
+  font-size: 11px;
+  color: var(--text-muted);
+  background: var(--background-secondary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 6px;
+  padding: 6px 8px;
+  max-height: 100px;
+  overflow: auto;
+  line-height: 1.4;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.agenter-selection-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+}
+.agenter-selection-action {
+  appearance: none;
+  height: 30px;
+  padding: 0 8px;
+  color: var(--text-normal);
+  background: var(--background-secondary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.12s, border-color 0.12s;
+}
+.agenter-selection-action:hover {
+  background: var(--background-modifier-hover);
+  border-color: var(--interactive-accent);
+}
+.agenter-selection-action.is-custom {
+  grid-column: 1 / -1;
+  color: var(--text-on-accent);
+  background: var(--interactive-accent);
+  border-color: var(--interactive-accent);
+}
+.agenter-selection-action.is-custom:hover {
+  filter: brightness(1.08);
+}
+
+@media (max-width: 560px) {
+  .agenter-root.is-floating {
+    left: 8px !important;
+    top: 8px !important;
+    width: calc(100vw - 16px) !important;
+    height: calc(100vh - 16px) !important;
+    max-width: none;
+  }
+  .agenter-sidebar { width: min(220px, 72vw); }
+  .agenter-composer-toolbar { align-items: stretch; flex-direction: column; }
+  .agenter-tool-chips { justify-content: flex-start; }
+  .agenter-messages { padding: 10px; }
+  .agenter-msg { max-width: 96%; }
+  .agenter-scope { overflow-x: auto; flex-wrap: nowrap; }
+  .agenter-scope-label { flex-shrink: 0; }
+  .agenter-scope-btn { flex-shrink: 0; }
+}
+
+
+/* ============================================================
+   Agenter — Professional polish layer (v0.4)
+   FINAL override layer. Refines the chat + panel UI for a more
+   polished, professional look while staying fully theme-aware
+   through Obsidian CSS variables (works in light & dark).
+   Includes automatic RTL handling for Persian / Arabic text.
+   ============================================================ */
+.agenter-root {
+  --agenter-radius: 12px;
+  --agenter-radius-sm: 8px;
+  --agenter-accent: var(--interactive-accent);
+  --agenter-accent-hover: var(--interactive-accent-hover, var(--interactive-accent));
+  --agenter-accent-soft: color-mix(in srgb, var(--interactive-accent) 14%, transparent);
+  --agenter-accent-line: color-mix(in srgb, var(--interactive-accent) 42%, transparent);
+  --agenter-bg: var(--background-primary);
+  --agenter-bg-2: var(--background-secondary);
+  --agenter-surface: var(--background-primary);
+  --agenter-border: var(--background-modifier-border);
+  --agenter-text: var(--text-normal);
+  --agenter-muted: var(--text-muted);
+  font-family: var(--font-ui);
+  font-feature-settings: "kern", "liga";
+  color: var(--agenter-text);
+  background: var(--agenter-bg);
+  border-color: var(--agenter-border);
+  box-shadow: none;
+}
+.agenter-root.is-floating {
+  border-radius: var(--agenter-radius);
+  border: 1px solid var(--agenter-border);
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.28), 0 2px 8px rgba(0, 0, 0, 0.12);
+}
+.agenter-root.is-docked,
+.agenter-root.is-native-view {
+  border-radius: 0;
+  background: var(--agenter-bg);
+}
+
+/* ---------------------------------------------------------- header */
+.agenter-header {
+  min-height: 52px;
+  padding: 10px 12px;
+  gap: 8px;
+  background: var(--agenter-bg);
+  backdrop-filter: none;
+  border-bottom: 1px solid var(--agenter-border);
+}
+.agenter-header-left { gap: 10px; min-width: 0; }
+.agenter-brand { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.agenter-dot {
+  width: 30px;
+  height: 30px;
+  flex-shrink: 0;
+  border: none;
+  border-radius: 9px;
+  color: var(--text-on-accent, #fff);
+  background: linear-gradient(135deg, var(--agenter-accent), color-mix(in srgb, var(--agenter-accent) 55%, #6d5efc));
+  box-shadow: 0 2px 10px var(--agenter-accent-soft);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  animation: none;
+}
+.agenter-dot svg { width: 16px; height: 16px; }
+.agenter-root.is-busy .agenter-dot { animation: none; }
+.agenter-title-wrap { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.agenter-title {
+  color: var(--agenter-text);
+  font-size: 13.5px;
+  font-weight: 700;
+  letter-spacing: -0.2px;
+  line-height: 1.15;
+}
+.agenter-subtitle {
+  display: block;
+  color: var(--agenter-muted);
+  font-size: 10.5px;
+  font-weight: 500;
+  line-height: 1.15;
+  letter-spacing: 0.1px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.agenter-provider-btn {
+  height: 28px;
+  max-width: 160px;
+  padding: 0 12px;
+  color: var(--agenter-muted);
+  background: var(--agenter-bg-2);
+  border: 1px solid var(--agenter-border);
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  transition: color 0.14s, border-color 0.14s, background 0.14s;
+}
+.agenter-provider-btn:hover {
+  color: var(--agenter-text);
+  background: var(--background-modifier-hover);
+  border-color: var(--agenter-accent-line);
+}
+.agenter-controls { gap: 2px; }
+.agenter-icon-btn {
+  width: 30px;
+  height: 30px;
+  color: var(--agenter-muted);
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  transition: color 0.14s, background 0.14s;
+}
+.agenter-icon-btn:hover {
+  color: var(--agenter-text);
+  background: var(--background-modifier-hover);
+  border-color: transparent;
+}
+.agenter-stop { color: var(--agenter-accent) !important; }
+
+/* ---------------------------------------------------------- status */
+.agenter-status {
+  min-height: 30px;
+  padding: 6px 13px;
+  gap: 8px;
+  color: var(--agenter-muted);
+  background: var(--agenter-bg-2);
+  border-bottom: 1px solid var(--agenter-border);
+  font-size: 11px;
+}
+.agenter-status.is-thinking,
+.agenter-status.is-responding,
+.agenter-status.is-tool,
+.agenter-status.is-approval {
+  background: linear-gradient(90deg, var(--agenter-accent-soft), transparent 72%);
+}
+.agenter-status-text { font-weight: 600; color: var(--agenter-text); }
+.agenter-status-icon { color: var(--agenter-muted); }
+.agenter-status.is-thinking .agenter-status-icon,
+.agenter-status.is-responding .agenter-status-icon,
+.agenter-status.is-tool .agenter-status-icon { color: var(--agenter-accent); }
+.agenter-status.is-done .agenter-status-icon { color: var(--interactive-success, #46a171); }
+.agenter-status.is-error .agenter-status-icon { color: var(--text-error, #e56458); }
+.agenter-status-meta { font-variant-numeric: tabular-nums; }
+
+/* ---------------------------------------------- sidebar (history) */
+.agenter-sidebar { width: 230px; background: var(--agenter-bg-2); }
+.agenter-sidebar-head {
+  padding: 12px 12px;
+  font-size: 11px;
+  letter-spacing: 0.6px;
+  color: var(--agenter-muted);
+}
+.agenter-session-item {
+  padding: 9px 11px;
+  border-radius: 10px;
+  background: var(--agenter-bg);
+  border: 1px solid transparent;
+  transition: border-color 0.12s, background 0.12s;
+}
+.agenter-session-item:hover { border-color: var(--agenter-border); background: var(--background-modifier-hover); }
+.agenter-session-item.is-active {
+  border-color: var(--agenter-accent-line);
+  background: var(--agenter-accent-soft);
+}
+
+/* --------------------------------------------------------- messages */
+.agenter-messages {
+  flex: 1;
+  padding: 18px 16px;
+  gap: 16px;
+  background: var(--agenter-bg);
+  background-size: auto;
+  scroll-behavior: smooth;
+}
+.agenter-msg {
+  max-width: 100%;
+  padding: 0;
+  border-radius: 0;
+  background: transparent;
+  font-size: 13.5px;
+  line-height: 1.6;
+  animation: agenter-fade 0.18s ease;
+}
+.agenter-msg-user {
+  align-self: flex-end;
+  max-width: 86%;
+  background: transparent;
+}
+.agenter-msg-user .agenter-avatar { display: none; }
+.agenter-msg-assistant {
+  align-self: stretch;
+  display: flex;
+  gap: 10px;
+  max-width: 100%;
+  background: transparent;
+  border: none;
+}
+.agenter-msg-user .agenter-bubble,
+.agenter-msg-assistant .agenter-bubble {
+  padding: 10px 14px;
+  border-radius: 16px;
+  box-shadow: none;
+  /* Auto direction: Persian/Arabic lines render RTL, English LTR. */
+  unicode-bidi: plaintext;
+  text-align: start;
+}
+.agenter-msg-user .agenter-bubble {
+  margin-left: 0;
+  color: var(--text-on-accent, #fff);
+  background: linear-gradient(135deg, var(--agenter-accent), color-mix(in srgb, var(--agenter-accent) 82%, #000));
+  border: none;
+  border-bottom-right-radius: 5px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+}
+.agenter-msg-assistant .agenter-bubble {
+  color: var(--agenter-text);
+  background: var(--agenter-bg-2);
+  border: 1px solid var(--agenter-border);
+  border-bottom-left-radius: 5px;
+}
+.agenter-msg-assistant .agenter-bubble a { color: var(--agenter-accent); }
+.agenter-avatar {
+  width: 28px;
+  height: 28px;
+  margin-top: 2px;
+  flex-shrink: 0;
+  color: var(--text-on-accent, #fff);
+  background: linear-gradient(135deg, var(--agenter-accent), color-mix(in srgb, var(--agenter-accent) 55%, #6d5efc));
+  border: none;
+  border-radius: 8px;
+  font-size: 12px;
+  font-weight: 700;
+}
+.agenter-copy-btn {
+  top: 4px;
+  right: 4px;
+  width: 24px;
+  height: 24px;
+  color: var(--agenter-muted);
+  background: transparent;
+  border: none;
+  border-radius: 7px;
+}
+.agenter-copy-btn:hover { color: var(--agenter-text); background: var(--background-modifier-hover); }
+
+/* --------------------------------------------- tool line + actions */
+.agenter-tool-line {
+  margin-left: 38px;
+  padding: 8px 11px;
+  color: var(--agenter-muted);
+  background: var(--agenter-bg-2);
+  border: 1px solid var(--agenter-border);
+  border-left: 2px solid var(--agenter-accent);
+  border-radius: 10px;
+  box-shadow: none;
+}
+.agenter-tool-line-head { font-size: 12px; font-weight: 600; color: var(--agenter-text); }
+.agenter-action-card {
+  margin-left: 38px;
+  padding: 12px;
+  background: var(--agenter-bg-2);
+  border: 1px solid var(--agenter-accent-line);
+  border-radius: 12px;
+  box-shadow: none;
+}
+.agenter-action-approve { background: var(--agenter-accent); color: var(--text-on-accent, #fff); border-radius: 8px; }
+.agenter-action-reject { border-radius: 8px; }
+
+/* ---------------------------------------------------- composer */
+.agenter-input-wrap {
+  padding: 10px 12px 12px;
+  gap: 8px;
+  background: var(--agenter-bg);
+  border-top: 1px solid var(--agenter-border);
+}
+.agenter-composer-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0;
+  background: transparent;
+  border: none;
+  border-radius: 0;
+}
+.agenter-context-chip {
+  height: 28px;
+  padding: 0 12px;
+  color: var(--agenter-text);
+  background: var(--agenter-bg-2);
+  border: 1px solid var(--agenter-border);
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  transition: background 0.12s, border-color 0.12s;
+}
+.agenter-context-chip:hover { background: var(--background-modifier-hover); border-color: var(--agenter-accent-line); }
+.agenter-context-chip svg { color: var(--agenter-accent); }
+.agenter-model-settings-btn { margin-left: auto; color: var(--agenter-muted); }
+.agenter-input-inner {
+  min-height: 46px;
+  padding: 6px 6px 6px 10px;
+  gap: 6px;
+  background: var(--agenter-bg-2);
+  border: 1px solid var(--agenter-border);
+  border-radius: 14px;
+  box-shadow: none;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+.agenter-input-inner:focus-within {
+  border-color: var(--agenter-accent);
+  box-shadow: 0 0 0 3px var(--agenter-accent-soft);
+}
+.agenter-input {
+  min-height: 32px;
+  height: 32px;
+  max-height: 150px;
+  color: var(--agenter-text);
+  font-size: 13.5px;
+  line-height: 1.45;
+  /* Auto direction for typed Persian/English. */
+  unicode-bidi: plaintext;
+  text-align: start;
+}
+.agenter-inline-btn { width: 32px; height: 32px; border-radius: 10px; color: var(--agenter-muted); }
+.agenter-inline-btn:hover { color: var(--agenter-text); background: var(--background-modifier-hover); }
+.agenter-send {
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  color: var(--text-on-accent, #fff);
+  background: var(--agenter-accent);
+  border-radius: 11px;
+  box-shadow: 0 1px 3px var(--agenter-accent-soft);
+  transition: filter 0.12s, transform 0.05s, background 0.12s;
+}
+.agenter-send:hover { background: var(--agenter-accent-hover); filter: brightness(1.03); }
+.agenter-send:active { transform: scale(0.96); }
+.agenter-send:disabled { opacity: 0.45; }
+
+/* Keep the legacy dashboard chrome hidden. */
+.agenter-command-panel,
+.agenter-capability-grid { display: none !important; }
+
+
+/* ============================================================
+   Agenter - v0.5 fixes & polish (final override layer)
+   1) Removes the per-message square copy button.
+   2) Keeps rendered markdown inside the message bubble.
+   3) Moves the model selector to the bottom of the composer.
+   4) Redesigns the composer for a modern chat UX.
+   5) Adds a subtle vertical connector line under the AI avatar.
+   ============================================================ */
+
+/* 1) Remove the square copy button on every message. */
+.agenter-copy-btn { display: none !important; }
+
+/* 2) Keep all rendered markdown inside the bubble (no overflow). */
+.agenter-bubble {
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+.agenter-msg-user .agenter-bubble,
+.agenter-msg-assistant .agenter-bubble {
+  overflow: hidden;
+}
+.agenter-bubble pre {
+  max-width: 100%;
+  overflow-x: auto;
+  white-space: pre;
+}
+.agenter-bubble pre code { white-space: pre; }
+.agenter-bubble code { overflow-wrap: anywhere; word-break: break-word; }
+.agenter-bubble p,
+.agenter-bubble li,
+.agenter-bubble h1,
+.agenter-bubble h2,
+.agenter-bubble h3,
+.agenter-bubble h4,
+.agenter-bubble blockquote {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+.agenter-bubble img { max-width: 100%; height: auto; }
+.agenter-bubble table {
+  display: block;
+  width: 100%;
+  max-width: 100%;
+  overflow-x: auto;
+}
+.agenter-bubble a { overflow-wrap: anywhere; word-break: break-all; }
+
+/* 3 + 4) Composer redesign: one rounded box with the context chip on top,
+   the text area in the middle, and the model selector plus action buttons
+   on the bottom row. */
+.agenter-input-wrap {
+  padding: 10px 12px 12px;
+  background: var(--agenter-bg);
+  border-top: 1px solid var(--agenter-border);
+}
+.agenter-composer {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  background: var(--agenter-bg-2);
+  border: 1px solid var(--agenter-border);
+  border-radius: 16px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+.agenter-composer:focus-within {
+  border-color: var(--agenter-accent);
+  box-shadow: 0 0 0 3px var(--agenter-accent-soft);
+}
+.agenter-composer-context {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.agenter-composer .agenter-input {
+  width: 100%;
+  min-height: 34px;
+  height: 34px;
+  max-height: 180px;
+  padding: 2px;
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  resize: none;
+  outline: none;
+  color: var(--agenter-text);
+  font-size: 14px;
+  line-height: 1.5;
+  unicode-bidi: plaintext;
+  text-align: start;
+}
+.agenter-composer .agenter-input:focus,
+.agenter-composer .agenter-input:focus-within {
+  box-shadow: none;
+  border: none;
+}
+.agenter-composer-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.agenter-composer-left,
+.agenter-composer-right {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+.agenter-composer .agenter-provider-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+  max-width: 220px;
+  padding: 0 12px;
+  color: var(--agenter-text);
+  background: var(--agenter-bg);
+  border: 1px solid var(--agenter-border);
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+.agenter-composer .agenter-provider-btn:hover {
+  color: var(--agenter-text);
+  background: var(--background-modifier-hover);
+  border-color: var(--agenter-accent);
+}
+.agenter-composer .agenter-model-settings-btn {
+  margin-left: 0;
+  width: 30px;
+  height: 30px;
+}
+.agenter-composer .agenter-inline-btn {
+  width: 32px;
+  height: 32px;
+  border-radius: 10px;
+}
+.agenter-composer .agenter-send {
+  width: 34px;
+  height: 34px;
+  border-radius: 12px;
+}
+
+/* 5) A subtle vertical connector line under the AI avatar that links the
+   logo to its answer (a well-known thread / timeline visual). */
+.agenter-msg-assistant { position: relative; }
+.agenter-msg-assistant::before {
+  content: "";
+  position: absolute;
+  left: 13px;
+  top: 34px;
+  bottom: 6px;
+  width: 2px;
+  border-radius: 2px;
+  background: linear-gradient(
+    to bottom,
+    var(--agenter-accent-line, rgba(120, 120, 255, 0.42)),
+    transparent
+  );
+  opacity: 0.6;
+  pointer-events: none;
+}
+.agenter-msg-assistant .agenter-avatar {
+  position: relative;
+  z-index: 1;
+}
+/* Gentle glow on the avatar while the assistant is streaming a reply. */
+.agenter-root.is-busy .agenter-msg-assistant:last-of-type .agenter-avatar {
+  animation: agenter-avatar-glow 1.6s ease-in-out infinite;
+}
+@keyframes agenter-avatar-glow {
+  0%, 100% { box-shadow: 0 0 0 2px var(--agenter-accent-soft); }
+  50% { box-shadow: 0 0 0 5px var(--agenter-accent-soft); }
+}
+
+
+/* ============================================================
+   Agenter v0.6 — native markdown, spacing, motion & safe actions
+   ============================================================ */
+.agenter-messages {
+  padding: 16px 14px 18px 16px !important;
+  gap: 14px !important;
+  overflow-x: hidden;
+  scroll-padding-block: 16px;
+}
+.agenter-msg-assistant {
+  display: grid !important;
+  grid-template-columns: 28px minmax(0, 1fr);
+  align-items: start;
+  column-gap: 10px !important;
+  width: 100%;
+  min-width: 0;
+  padding-inline: 0 2px !important;
+  animation: agenter-message-in .24s cubic-bezier(.2,.75,.25,1) both;
+}
+.agenter-msg-user {
+  margin-inline: 34px 2px;
+  max-width: min(88%, 680px) !important;
+  animation: agenter-message-in .2s cubic-bezier(.2,.75,.25,1) both;
+}
+.agenter-msg-assistant .agenter-bubble,
+.agenter-msg-user .agenter-bubble {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  padding: 11px 13px !important;
+}
+.agenter-msg-assistant .agenter-bubble[dir="rtl"],
+.agenter-msg-user .agenter-bubble[dir="rtl"],
+.agenter-tool-line-body[dir="rtl"] {
+  direction: rtl;
+  text-align: right;
+}
+.agenter-msg-assistant .agenter-bubble[dir="ltr"],
+.agenter-msg-user .agenter-bubble[dir="ltr"],
+.agenter-tool-line-body[dir="ltr"] {
+  direction: ltr;
+  text-align: left;
+}
+.agenter-bubble.markdown-rendered > :first-child,
+.agenter-tool-line-body.markdown-rendered > :first-child { margin-top: 0 !important; }
+.agenter-bubble.markdown-rendered > :last-child,
+.agenter-tool-line-body.markdown-rendered > :last-child { margin-bottom: 0 !important; }
+.agenter-bubble.markdown-rendered h1 { font-size: 1.45em; }
+.agenter-bubble.markdown-rendered h2 { font-size: 1.28em; }
+.agenter-bubble.markdown-rendered h3 { font-size: 1.14em; }
+.agenter-bubble.markdown-rendered h1,
+.agenter-bubble.markdown-rendered h2,
+.agenter-bubble.markdown-rendered h3 {
+  line-height: 1.35;
+  margin-block: 1em .5em;
+}
+.agenter-bubble.markdown-rendered ul,
+.agenter-bubble.markdown-rendered ol,
+.agenter-tool-line-body.markdown-rendered ul,
+.agenter-tool-line-body.markdown-rendered ol {
+  padding-inline-start: 1.5em !important;
+  padding-inline-end: 0 !important;
+  margin-block: .55em;
+}
+.agenter-bubble.markdown-rendered li,
+.agenter-tool-line-body.markdown-rendered li { margin-block: .28em; }
+
+/* Native-looking document/tool preview. */
+.agenter-tool-line {
+  box-sizing: border-box;
+  margin-inline: 38px 2px !important;
+  padding: 0 !important;
+  min-width: 0;
+  overflow: hidden;
+  cursor: default;
+  border-inline-start: 2px solid var(--agenter-accent) !important;
+  animation: agenter-tool-in .22s ease-out both;
+}
+.agenter-tool-line-head {
+  min-height: 38px;
+  padding: 8px 10px;
+  cursor: pointer;
+  user-select: none;
+}
+.agenter-tool-label {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  flex-direction: column;
+  gap: 1px;
+}
+.agenter-tool-label strong { font-size: 12px; line-height: 1.3; }
+.agenter-tool-label small {
+  overflow: hidden;
+  color: var(--agenter-muted);
+  font-family: var(--font-monospace);
+  font-size: 10px;
+  font-weight: 400;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agenter-tool-line-body {
+  box-sizing: border-box;
+  max-height: 0 !important;
+  margin: 0 !important;
+  padding: 0 12px !important;
+  overflow: hidden !important;
+  opacity: 0;
+  color: var(--text-normal);
+  background: color-mix(in srgb, var(--background-primary) 88%, transparent);
+  font-family: var(--font-text) !important;
+  font-size: var(--font-ui-small, 13px) !important;
+  line-height: var(--line-height-normal, 1.6) !important;
+  white-space: normal !important;
+  transition: max-height .32s cubic-bezier(.2,.7,.2,1), padding .22s ease, opacity .18s ease;
+}
+.agenter-tool-line.is-open .agenter-tool-line-body {
+  max-height: min(62vh, 720px) !important;
+  padding: 12px !important;
+  overflow: auto !important;
+  opacity: 1;
+  border-top: 1px solid var(--agenter-border);
+}
+.agenter-tool-line.is-document .agenter-tool-line-body {
+  font-size: var(--font-text-size, 15px) !important;
+  line-height: var(--line-height-normal, 1.65) !important;
+}
+.agenter-tool-line-body.markdown-rendered h1 { font-size: 1.55em !important; line-height: 1.3; }
+.agenter-tool-line-body.markdown-rendered h2 { font-size: 1.35em !important; line-height: 1.35; }
+.agenter-tool-line-body.markdown-rendered h3 { font-size: 1.18em !important; line-height: 1.4; }
+.agenter-tool-line-body.markdown-rendered h1,
+.agenter-tool-line-body.markdown-rendered h2,
+.agenter-tool-line-body.markdown-rendered h3,
+.agenter-tool-line-body.markdown-rendered h4 {
+  margin-block: 1.1em .5em;
+  color: var(--text-normal);
+  font-weight: var(--font-semibold, 600);
+}
+.agenter-tool-line-body.markdown-rendered p { margin-block: .65em; }
+.agenter-tool-line-body.markdown-rendered blockquote {
+  margin-inline: 0;
+  padding-inline: 12px;
+  border-inline-start: 3px solid var(--agenter-accent-line);
+}
+.agenter-tool-line-body.markdown-rendered pre {
+  max-width: 100%;
+  overflow: auto;
+  border-radius: 8px;
+}
+.agenter-tool-line-body.markdown-rendered .task-list-item-checkbox { margin-inline-end: 6px; }
+
+/* Safer destructive action language and double-confirm state. */
+.agenter-action-card.is-destructive { border-color: var(--color-red, #e05252) !important; }
+.agenter-action-card.is-destructive .agenter-action-icon { color: var(--color-red, #e05252); }
+.agenter-action-card.is-destructive .agenter-action-approve {
+  background: transparent;
+  color: var(--color-red, #e05252);
+  border: 1px solid color-mix(in srgb, var(--color-red, #e05252) 55%, transparent);
+}
+.agenter-action-card.is-destructive.is-armed {
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-red, #e05252) 18%, transparent);
+}
+.agenter-action-card.is-destructive.is-armed .agenter-action-approve {
+  color: white;
+  background: var(--color-red, #e05252);
+}
+
+/* Subtle polish without distracting motion. */
+.agenter-composer {
+  position: relative;
+  overflow: hidden;
+  background: linear-gradient(180deg,
+    color-mix(in srgb, var(--agenter-bg-2) 96%, var(--agenter-accent) 4%),
+    var(--agenter-bg-2)) !important;
+  transition: transform .18s ease, border-color .18s ease, box-shadow .18s ease !important;
+}
+.agenter-composer:focus-within { transform: translateY(-1px); }
+.agenter-send { transition: transform .14s ease, filter .14s ease, box-shadow .18s ease !important; }
+.agenter-send:hover { transform: translateY(-1px) scale(1.03); box-shadow: 0 5px 14px var(--agenter-accent-soft); }
+.agenter-send:active { transform: scale(.94); }
+.agenter-tool-chevron { transition: transform .24s cubic-bezier(.2,.7,.2,1) !important; }
+.agenter-msg-assistant::before { transition: opacity .2s ease, background .2s ease; }
+.agenter-msg-assistant:hover::before { opacity: .9; }
+.agenter-root.is-busy .agenter-status::after {
+  content: "";
+  position: absolute;
+  inset-inline: 0;
+  bottom: 0;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, var(--agenter-accent), transparent);
+  animation: agenter-status-sweep 1.6s ease-in-out infinite;
+}
+@keyframes agenter-message-in {
+  from { opacity: 0; transform: translateY(7px) scale(.992); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes agenter-tool-in {
+  from { opacity: 0; transform: translateY(5px); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes agenter-status-sweep {
+  0% { transform: translateX(-100%); opacity: 0; }
+  35%, 65% { opacity: .85; }
+  100% { transform: translateX(100%); opacity: 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .agenter-root *, .agenter-root *::before, .agenter-root *::after {
+    animation-duration: .01ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+    transition-duration: .01ms !important;
+  }
+}
+
+
+/* ============================================================
+   Agenter v0.7 — precise model controls + contextual AI workflow
+   ============================================================ */
+/* Remove every static connector / markdown separator line. */
+.agenter-msg-assistant::before { content: none !important; display: none !important; }
+.agenter-bubble hr { display: none !important; }
+.agenter-root.is-busy .agenter-status::after { content: none !important; display: none !important; }
+
+/* Flow is visible only while work is happening: a compact orbit around status. */
+.agenter-status-icon { position: relative; }
+.agenter-root.is-busy .agenter-status-icon::after {
+  content: "";
+  position: absolute;
+  inset: -4px;
+  border: 2px solid transparent;
+  border-top-color: var(--agenter-accent);
+  border-right-color: color-mix(in srgb, var(--agenter-accent) 35%, transparent);
+  border-radius: 999px;
+  animation: agenter-flow-orbit .8s linear infinite;
+  pointer-events: none;
+}
+@keyframes agenter-flow-orbit { to { transform: rotate(360deg); } }
+
+/* In-chat model settings: slider + direct numeric entry. */
+.agenter-model-popover {
+  position: fixed;
+  z-index: 11000;
+  width: 320px;
+  box-sizing: border-box;
+  padding: 12px;
+  color: var(--text-normal);
+  background: color-mix(in srgb, var(--background-primary) 96%, transparent);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 14px;
+  box-shadow: 0 16px 48px rgba(0,0,0,.28);
+  backdrop-filter: blur(16px);
+  font-family: var(--font-ui);
+  animation: agenter-pop-in .16s cubic-bezier(.2,.8,.2,1) both;
+}
+.agenter-model-popover-head {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 2px 2px 10px;
+  border-bottom: 1px solid var(--background-modifier-border);
+}
+.agenter-model-popover-head strong { font-size: 13px; }
+.agenter-model-popover-head span {
+  overflow: hidden;
+  color: var(--text-muted);
+  font-family: var(--font-monospace);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agenter-model-control { display: flex; flex-direction: column; gap: 8px; padding: 11px 2px 7px; }
+.agenter-model-control-top { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.agenter-model-control label { font-size: 12px; font-weight: 600; }
+.agenter-model-control input[type="number"] {
+  width: 92px;
+  height: 30px;
+  padding: 0 8px;
+  color: var(--text-normal);
+  background: var(--background-secondary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 8px;
+  font-family: var(--font-monospace);
+  font-size: 12px;
+  text-align: center;
+}
+.agenter-model-control input[type="number"]:focus {
+  border-color: var(--interactive-accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--interactive-accent) 20%, transparent);
+}
+.agenter-model-control input[type="range"] { width: 100%; accent-color: var(--interactive-accent); cursor: pointer; }
+.agenter-model-full-settings {
+  width: 100%;
+  height: 34px;
+  margin-top: 8px;
+  color: var(--text-normal);
+  background: var(--background-secondary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 9px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.agenter-model-full-settings:hover { border-color: var(--interactive-accent); background: var(--background-modifier-hover); }
+
+/* Contextual AI appears beside the selection and acts as a mini workflow hub. */
+.agenter-selection-popover.is-contextual {
+  width: min(360px, calc(100vw - 20px));
+  padding: 10px;
+  gap: 9px;
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--background-primary) 96%, transparent);
+  box-shadow: 0 18px 52px rgba(0,0,0,.3);
+  backdrop-filter: blur(16px);
+  animation: agenter-pop-in .16s cubic-bezier(.2,.8,.2,1) both;
+}
+.agenter-selection-brand {
+  display: inline-flex !important;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 26px !important;
+  width: 26px;
+  height: 26px;
+  color: var(--text-on-accent);
+  background: linear-gradient(135deg, var(--interactive-accent), #7867e8);
+  border-radius: 8px;
+}
+.agenter-selection-brand svg { width: 14px !important; height: 14px !important; color: inherit !important; }
+.agenter-selection-preview {
+  max-height: 76px;
+  padding: 8px 10px;
+  border-radius: 9px;
+  font-family: var(--font-text);
+  font-size: 11.5px;
+  line-height: 1.5;
+  unicode-bidi: plaintext;
+}
+.agenter-selection-primary-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.agenter-selection-primary-actions button {
+  height: 32px;
+  color: var(--text-normal);
+  background: var(--background-secondary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 8px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.agenter-selection-primary-actions button:hover { border-color: var(--interactive-accent); }
+.agenter-selection-primary-actions .is-primary { color: var(--text-on-accent); background: var(--interactive-accent); border-color: var(--interactive-accent); }
+.agenter-selection-actions {
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  padding-bottom: 2px;
+  scrollbar-width: thin;
+}
+.agenter-selection-action {
+  flex: 0 0 auto;
+  height: 29px;
+  padding-inline: 10px;
+  text-transform: capitalize;
+  border-radius: 999px;
+}
+.agenter-selection-action.is-custom { grid-column: auto; }
+.agenter-selection-composer {
+  display: grid;
+  grid-template-columns: minmax(0,1fr) 34px;
+  gap: 6px;
+  padding: 6px;
+  background: var(--background-secondary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 11px;
+}
+.agenter-selection-composer:focus-within { border-color: var(--interactive-accent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--interactive-accent) 18%, transparent); }
+.agenter-selection-composer textarea {
+  min-width: 0;
+  min-height: 32px;
+  max-height: 100px;
+  padding: 6px;
+  resize: vertical;
+  color: var(--text-normal);
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  font-family: var(--font-ui);
+  font-size: 12px;
+  line-height: 1.4;
+  unicode-bidi: plaintext;
+}
+.agenter-selection-composer textarea:focus { border: none; box-shadow: none; outline: none; }
+.agenter-selection-composer button {
+  align-self: end;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  color: var(--text-on-accent);
+  background: var(--interactive-accent);
+  border: none;
+  border-radius: 9px;
+  font-size: 18px;
+  cursor: pointer;
+}
+@keyframes agenter-pop-in {
+  from { opacity: 0; transform: translateY(4px) scale(.98); }
+  to { opacity: 1; transform: none; }
+}
+
+
+/* ============================================================
+   Agenter v0.7.1 — prevent tool/message cards collapsing into lines
+   The messages viewport must scroll; its children must never flex-shrink.
+   ============================================================ */
+.agenter-messages > .agenter-msg,
+.agenter-messages > .agenter-tool-line,
+.agenter-messages > .agenter-action-card,
+.agenter-messages > .agenter-msg-system {
+  flex: 0 0 auto !important;
+  flex-shrink: 0 !important;
+  min-height: min-content;
+}
+.agenter-tool-line {
+  height: auto !important;
+  flex-basis: auto !important;
+}
+.agenter-tool-line-head,
+.agenter-tool-line-body,
+.agenter-tool-line.is-open .agenter-tool-line-body {
+  flex-shrink: 0 !important;
+}
+.agenter-msg-assistant,
+.agenter-msg-user,
+.agenter-msg.is-typing {
+  height: auto !important;
+  flex-basis: auto !important;
+}
+/* The viewport owns overflow instead of compressing previous results. */
+.agenter-messages {
+  overflow-y: auto !important;
+  overflow-x: hidden !important;
+  align-content: flex-start;
+}
+
+
+/* ============================================================
+   Agenter v0.8 — compact third-mode contextual chat
+   ============================================================ */
+.agenter-selection-popover.is-contextual {
+  width: min(294px, calc(100vw - 16px)) !important;
+  max-height: min(420px, calc(100vh - 16px));
+  padding: 7px !important;
+  gap: 6px !important;
+  overflow: hidden;
+  border-radius: 12px !important;
+}
+.agenter-selection-popover.is-contextual .agenter-selection-popover-head {
+  min-height: 26px;
+  gap: 6px;
+  padding-inline: 1px;
+}
+.agenter-selection-popover.is-contextual .agenter-selection-brand {
+  flex-basis: 22px !important;
+  width: 22px;
+  height: 22px;
+  border-radius: 7px;
+}
+.agenter-selection-popover.is-contextual .agenter-selection-popover-head > span:not(.agenter-selection-brand) {
+  font-size: 11.5px;
+}
+.agenter-selection-popover.is-contextual .agenter-selection-preview {
+  box-sizing: border-box;
+  width: 100%;
+  max-height: 58px;
+  padding: 6px 8px !important;
+  overflow: auto;
+  border-radius: 8px;
+  font-family: var(--font-text);
+  font-size: 11px !important;
+  line-height: 1.4 !important;
+  pointer-events: none;
+}
+/* Normalize native markdown inside the tiny preview. */
+.agenter-selection-preview.markdown-rendered > :first-child { margin-top: 0 !important; }
+.agenter-selection-preview.markdown-rendered > :last-child { margin-bottom: 0 !important; }
+.agenter-selection-preview.markdown-rendered p { margin-block: 3px !important; }
+.agenter-selection-preview.markdown-rendered h1,
+.agenter-selection-preview.markdown-rendered h2,
+.agenter-selection-preview.markdown-rendered h3,
+.agenter-selection-preview.markdown-rendered h4 {
+  margin-block: 4px 2px !important;
+  font-size: 1.05em !important;
+  line-height: 1.3 !important;
+}
+.agenter-selection-preview.markdown-rendered ul,
+.agenter-selection-preview.markdown-rendered ol {
+  margin-block: 3px !important;
+  padding-inline-start: 18px !important;
+}
+.agenter-selection-preview.markdown-rendered li { margin-block: 1px !important; }
+.agenter-selection-preview.markdown-rendered pre { margin-block: 3px; padding: 5px; }
+
+.agenter-selection-popover.is-contextual .agenter-selection-primary-actions { gap: 5px; }
+.agenter-selection-popover.is-contextual .agenter-selection-primary-actions button {
+  height: 28px;
+  border-radius: 7px;
+  font-size: 11px;
+}
+.agenter-selection-popover.is-contextual .agenter-selection-actions { gap: 4px; padding: 0; }
+.agenter-selection-popover.is-contextual .agenter-selection-action {
+  height: 25px;
+  padding-inline: 8px;
+  font-size: 10.5px;
+  border-radius: 999px;
+}
+.agenter-selection-popover.is-contextual .agenter-selection-composer {
+  grid-template-columns: minmax(0,1fr) 30px;
+  gap: 4px;
+  padding: 4px;
+  border-radius: 9px;
+}
+.agenter-selection-popover.is-contextual .agenter-selection-composer textarea {
+  min-height: 28px;
+  max-height: 72px;
+  padding: 5px;
+  resize: none;
+  font-size: 11.5px;
+}
+.agenter-selection-popover.is-contextual .agenter-selection-composer button {
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  font-size: 16px;
+}
+
+/* Third mode conversation stays inside the selection popover. */
+.agenter-selection-chat-log {
+  display: none;
+  flex-direction: column;
+  gap: 6px;
+  min-height: 0;
+  max-height: 190px;
+  padding: 1px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.agenter-selection-popover.is-chatting .agenter-selection-chat-log { display: flex; }
+.agenter-selection-popover.is-chatting .agenter-selection-primary-actions,
+.agenter-selection-popover.is-chatting .agenter-selection-actions { display: none; }
+.agenter-selection-popover.is-chatting .agenter-selection-preview { max-height: 38px; opacity: .72; }
+.agenter-selection-chat-message {
+  box-sizing: border-box;
+  flex: 0 0 auto;
+  max-width: 92%;
+  padding: 6px 8px;
+  overflow-wrap: anywhere;
+  border-radius: 9px;
+  font-family: var(--font-text);
+  font-size: 11.5px;
+  line-height: 1.45;
+  animation: agenter-message-in .18s ease both;
+}
+.agenter-selection-chat-message.is-user {
+  align-self: flex-end;
+  color: var(--text-on-accent);
+  background: var(--interactive-accent);
+  border-bottom-right-radius: 3px;
+}
+.agenter-selection-chat-message.is-assistant {
+  align-self: flex-start;
+  color: var(--text-normal);
+  background: var(--background-secondary);
+  border: 1px solid var(--background-modifier-border);
+  border-bottom-left-radius: 3px;
+}
+.agenter-selection-chat-message.is-status {
+  align-self: center;
+  max-width: 100%;
+  padding: 2px 6px;
+  color: var(--text-muted);
+  background: transparent;
+  font-family: var(--font-ui);
+  font-size: 10px;
+}
+.agenter-selection-chat-message.markdown-rendered > :first-child { margin-top: 0 !important; }
+.agenter-selection-chat-message.markdown-rendered > :last-child { margin-bottom: 0 !important; }
+.agenter-selection-chat-message.markdown-rendered p { margin-block: 3px; }
+.agenter-selection-chat-message.markdown-rendered ul,
+.agenter-selection-chat-message.markdown-rendered ol { margin-block: 3px; padding-inline-start: 18px; }
+
+
+/* ============================================================
+   Agenter v0.9 — glass capsule UX + reliable preview + main timeline
+   ============================================================ */
+/* Compact glass capsule: translucent, saturated, and theme-aware. */
+.agenter-selection-popover.is-contextual {
+  width: min(300px, calc(100vw - 14px)) !important;
+  max-height: min(450px, calc(100vh - 14px)) !important;
+  padding: 8px !important;
+  gap: 6px !important;
+  overflow: hidden !important;
+  background:
+    linear-gradient(145deg,
+      color-mix(in srgb, var(--background-primary) 80%, white 5%),
+      color-mix(in srgb, var(--background-primary) 70%, var(--interactive-accent) 5%)) !important;
+  border: 1px solid color-mix(in srgb, var(--background-modifier-border) 70%, white 24%) !important;
+  border-radius: 18px !important;
+  box-shadow:
+    0 18px 48px rgba(0,0,0,.24),
+    inset 0 1px 0 rgba(255,255,255,.18) !important;
+  -webkit-backdrop-filter: blur(22px) saturate(1.35);
+  backdrop-filter: blur(22px) saturate(1.35);
+}
+.agenter-selection-popover.is-contextual::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  border-radius: inherit;
+  background: radial-gradient(circle at 12% 0%, color-mix(in srgb, var(--interactive-accent) 18%, transparent), transparent 38%);
+  pointer-events: none;
+}
+.agenter-selection-popover.is-contextual .agenter-selection-popover-head {
+  min-height: 25px;
+  padding: 0 2px;
+}
+/* Always-visible close glyph, independent of Lucide/SVG/theme rendering. */
+.agenter-selection-popover.is-contextual .agenter-selection-popover-close {
+  width: 24px;
+  height: 24px;
+  padding: 0 0 2px;
+  color: var(--text-muted);
+  background: color-mix(in srgb, var(--background-secondary) 68%, transparent);
+  border: 1px solid color-mix(in srgb, var(--background-modifier-border) 72%, transparent);
+  border-radius: 999px;
+  font-family: Arial, sans-serif;
+  font-size: 20px;
+  font-weight: 300;
+  line-height: 20px;
+}
+.agenter-selection-popover.is-contextual .agenter-selection-popover-close:hover {
+  color: var(--text-normal);
+  background: var(--background-modifier-hover);
+  transform: rotate(6deg) scale(1.04);
+}
+
+/* Selected Markdown is constrained by its own capsule, never allowed to leak. */
+.agenter-selection-preview-shell {
+  display: flex;
+  min-height: 0;
+  flex-direction: column;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--background-secondary) 60%, transparent);
+  border: 1px solid color-mix(in srgb, var(--background-modifier-border) 78%, transparent);
+  border-radius: 12px;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.08);
+}
+.agenter-selection-preview-top {
+  display: flex;
+  flex: 0 0 25px;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  height: 25px;
+  padding: 0 8px;
+  color: var(--text-muted);
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--background-modifier-border) 55%, transparent);
+  border-radius: 0;
+  font-size: 9.5px;
+  cursor: pointer;
+}
+.agenter-selection-preview-top span:last-child { color: var(--interactive-accent); font-weight: 600; }
+.agenter-selection-preview-shell .agenter-selection-preview {
+  display: block !important;
+  box-sizing: border-box;
+  width: 100% !important;
+  max-width: 100% !important;
+  height: auto !important;
+  max-height: 72px !important;
+  margin: 0 !important;
+  padding: 7px 9px !important;
+  overflow: auto !important;
+  overscroll-behavior: contain;
+  contain: content;
+  color: var(--text-normal);
+  background: transparent !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  font-size: 10.8px !important;
+  line-height: 1.42 !important;
+  pointer-events: auto !important;
+  scrollbar-width: thin;
+}
+.agenter-selection-preview-shell.is-expanded .agenter-selection-preview {
+  max-height: min(270px, 48vh) !important;
+}
+.agenter-selection-popover.is-chatting .agenter-selection-preview-shell:not(.is-expanded) .agenter-selection-preview {
+  max-height: 36px !important;
+}
+.agenter-selection-preview.markdown-rendered,
+.agenter-selection-preview.markdown-rendered * { box-sizing: border-box; max-width: 100%; }
+.agenter-selection-preview.markdown-rendered .markdown-preview-section { min-height: 0 !important; }
+.agenter-selection-preview.markdown-rendered p { margin: 2px 0 !important; }
+.agenter-selection-preview.markdown-rendered h1,
+.agenter-selection-preview.markdown-rendered h2,
+.agenter-selection-preview.markdown-rendered h3,
+.agenter-selection-preview.markdown-rendered h4,
+.agenter-selection-preview.markdown-rendered h5,
+.agenter-selection-preview.markdown-rendered h6 {
+  margin: 4px 0 2px !important;
+  font-size: 1.02em !important;
+  line-height: 1.3 !important;
+}
+.agenter-selection-preview.markdown-rendered ul,
+.agenter-selection-preview.markdown-rendered ol {
+  margin: 2px 0 !important;
+  padding-inline-start: 17px !important;
+}
+.agenter-selection-preview.markdown-rendered li { margin: 1px 0 !important; line-height: 1.38 !important; }
+.agenter-selection-preview.markdown-rendered input[type="checkbox"] {
+  width: 13px !important;
+  height: 13px !important;
+  margin: 0 4px !important;
+  vertical-align: -2px;
+}
+.agenter-selection-preview.markdown-rendered img { max-height: 120px; object-fit: contain; }
+.agenter-selection-preview.markdown-rendered pre { max-height: 120px; overflow: auto; }
+
+/* Capsule controls: compact, tactile, and quick. */
+.agenter-selection-popover.is-contextual .agenter-selection-primary-actions {
+  padding: 3px;
+  gap: 3px;
+  background: color-mix(in srgb, var(--background-secondary) 52%, transparent);
+  border: 1px solid color-mix(in srgb, var(--background-modifier-border) 70%, transparent);
+  border-radius: 999px;
+}
+.agenter-selection-popover.is-contextual .agenter-selection-primary-actions button {
+  height: 26px;
+  border: 0;
+  border-radius: 999px;
+  box-shadow: none;
+  font-size: 10.5px;
+}
+.agenter-selection-popover.is-contextual .agenter-selection-primary-actions .is-primary {
+  box-shadow: 0 3px 10px color-mix(in srgb, var(--interactive-accent) 26%, transparent);
+}
+.agenter-selection-popover.is-contextual .agenter-selection-actions { gap: 4px; mask-image: linear-gradient(90deg, #000 92%, transparent); }
+.agenter-selection-popover.is-contextual .agenter-selection-action {
+  height: 23px;
+  padding-inline: 8px;
+  background: color-mix(in srgb, var(--background-secondary) 62%, transparent);
+  border-color: color-mix(in srgb, var(--background-modifier-border) 74%, transparent);
+  font-size: 10px;
+}
+.agenter-selection-popover.is-contextual .agenter-selection-composer {
+  grid-template-columns: minmax(0,1fr) 29px;
+  min-height: 37px;
+  padding: 3px 3px 3px 9px;
+  background: color-mix(in srgb, var(--background-secondary) 62%, transparent);
+  border-color: color-mix(in srgb, var(--background-modifier-border) 78%, transparent);
+  border-radius: 999px;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.08);
+}
+.agenter-selection-popover.is-contextual .agenter-selection-composer textarea {
+  min-height: 29px;
+  height: 29px;
+  padding: 6px 2px;
+  line-height: 17px;
+}
+.agenter-selection-popover.is-contextual .agenter-selection-composer button {
+  width: 29px;
+  height: 29px;
+  border-radius: 999px;
+  box-shadow: 0 3px 9px color-mix(in srgb, var(--interactive-accent) 24%, transparent);
+}
+
+/* Stable in-place conversation — no layout explosion. */
+.agenter-selection-chat-log {
+  max-height: 175px !important;
+  padding: 2px 1px !important;
+  gap: 5px !important;
+}
+.agenter-selection-chat-message {
+  max-width: 88%;
+  padding: 6px 8px;
+  border-radius: 11px;
+  font-size: 10.8px;
+  line-height: 1.42;
+}
+.agenter-selection-chat-message.is-assistant {
+  background: color-mix(in srgb, var(--background-secondary) 58%, transparent);
+  border-color: color-mix(in srgb, var(--background-modifier-border) 70%, transparent);
+  backdrop-filter: blur(8px);
+}
+.agenter-selection-chat-message.markdown-rendered h1,
+.agenter-selection-chat-message.markdown-rendered h2,
+.agenter-selection-chat-message.markdown-rendered h3 {
+  margin: 4px 0 2px !important;
+  font-size: 1.05em !important;
+}
+.agenter-selection-chat-message.markdown-rendered pre { max-width: 100%; overflow: auto; }
+
+/* Main chat: restore a correct vertical AI timeline now that cards cannot shrink. */
+.agenter-messages {
+  position: relative;
+  background:
+    radial-gradient(circle at 12px 8%, color-mix(in srgb, var(--agenter-accent) 5%, transparent), transparent 24%),
+    var(--agenter-bg) !important;
+}
+.agenter-msg-assistant { position: relative; isolation: isolate; }
+.agenter-msg-assistant::before {
+  content: "" !important;
+  display: block !important;
+  position: absolute;
+  z-index: -1;
+  left: 13px;
+  top: 31px;
+  bottom: -14px;
+  width: 1px;
+  border-radius: 999px;
+  background: linear-gradient(to bottom,
+    color-mix(in srgb, var(--agenter-accent) 44%, transparent),
+    color-mix(in srgb, var(--agenter-accent) 10%, transparent) 72%,
+    transparent);
+  opacity: .72;
+  pointer-events: none;
+}
+.agenter-msg-assistant:last-of-type::before { bottom: 5px; }
+.agenter-root.is-busy .agenter-msg-assistant:last-of-type::before {
+  width: 2px;
+  background: linear-gradient(to bottom, transparent, var(--agenter-accent), transparent);
+  background-size: 100% 200%;
+  animation: agenter-ai-flow 1.5s linear infinite;
+}
+.agenter-avatar {
+  box-shadow:
+    0 0 0 3px var(--agenter-bg),
+    0 3px 12px color-mix(in srgb, var(--agenter-accent) 24%, transparent) !important;
+  transition: transform .18s ease, box-shadow .18s ease;
+}
+.agenter-msg-assistant:hover .agenter-avatar { transform: translateY(-1px) scale(1.035); }
+.agenter-msg-assistant .agenter-bubble {
+  background: color-mix(in srgb, var(--agenter-bg-2) 91%, transparent) !important;
+  border-color: color-mix(in srgb, var(--agenter-border) 82%, transparent) !important;
+  box-shadow: 0 5px 18px rgba(0,0,0,.035) !important;
+  backdrop-filter: blur(8px);
+  transition: border-color .18s ease, box-shadow .18s ease, transform .18s ease;
+}
+.agenter-msg-assistant:hover .agenter-bubble {
+  border-color: color-mix(in srgb, var(--agenter-accent) 24%, var(--agenter-border)) !important;
+  box-shadow: 0 7px 22px rgba(0,0,0,.055) !important;
+}
+.agenter-tool-line {
+  box-shadow: 0 4px 15px rgba(0,0,0,.03) !important;
+  backdrop-filter: blur(7px);
+}
+@keyframes agenter-ai-flow {
+  from { background-position: 0 -100%; }
+  to { background-position: 0 100%; }
+}
+
+
+/* ============================================================
+   Agenter v1.0 — clean preview, tidy capsule header, prompt builder
+   ============================================================ */
+/* Preview header: crisp, aligned, higher-contrast — no blurry chrome. */
+.agenter-selection-preview-top {
+  height: 27px !important;
+  flex: 0 0 27px !important;
+  padding: 0 10px !important;
+  color: var(--text-muted) !important;
+  background: color-mix(in srgb, var(--background-secondary) 82%, transparent) !important;
+  border-bottom: 1px solid color-mix(in srgb, var(--background-modifier-border) 60%, transparent) !important;
+  font-size: 10px !important;
+  font-weight: 600;
+  letter-spacing: .02em;
+  text-transform: none;
+}
+.agenter-selection-preview-top:hover { color: var(--text-normal) !important; }
+.agenter-selection-preview-top span:last-child {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 7px;
+  color: var(--text-on-accent) !important;
+  background: var(--interactive-accent);
+  border-radius: 999px;
+  font-size: 9px !important;
+  font-weight: 700;
+}
+
+/* Kill horizontal scrollbars entirely; wrap long links/words instead. */
+.agenter-selection-preview,
+.agenter-selection-chat-log,
+.agenter-selection-chat-message {
+  overflow-x: hidden !important;
+}
+.agenter-selection-preview.markdown-rendered,
+.agenter-selection-preview.markdown-rendered * {
+  overflow-wrap: anywhere !important;
+  word-break: break-word !important;
+  white-space: normal !important;
+}
+.agenter-selection-preview.markdown-rendered pre,
+.agenter-selection-chat-message.markdown-rendered pre {
+  white-space: pre-wrap !important;
+  overflow-x: auto !important;
+}
+.agenter-selection-preview.markdown-rendered pre code { white-space: pre-wrap !important; }
+
+/* Internal-link rendering fixes (links coming from other notes). */
+.agenter-selection-preview.markdown-rendered a.internal-link,
+.agenter-selection-chat-message.markdown-rendered a.internal-link {
+  color: var(--interactive-accent) !important;
+  text-decoration: none;
+  border-bottom: 1px dashed color-mix(in srgb, var(--interactive-accent) 55%, transparent);
+  overflow-wrap: anywhere;
+}
+.agenter-selection-preview.markdown-rendered a.internal-link.is-unresolved {
+  color: var(--text-muted) !important;
+  border-bottom-style: dotted;
+  opacity: .8;
+}
+.agenter-selection-preview.markdown-rendered a { overflow-wrap: anywhere; word-break: break-word; }
+.agenter-selection-preview.markdown-rendered .tag {
+  padding: 0 5px;
+  color: var(--text-accent);
+  background: color-mix(in srgb, var(--interactive-accent) 12%, transparent);
+  border-radius: 999px;
+  font-size: .92em;
+}
+.agenter-selection-preview.markdown-rendered .frontmatter,
+.agenter-selection-preview.markdown-rendered .metadata-container { display: none !important; }
+.agenter-selection-preview.markdown-rendered .callout {
+  margin: 3px 0 !important;
+  padding: 5px 8px !important;
+  border-radius: 8px;
+  font-size: .96em;
+}
+
+/* Slim, unobtrusive vertical scrollbars in the capsule. */
+.agenter-selection-preview::-webkit-scrollbar,
+.agenter-selection-chat-log::-webkit-scrollbar { width: 7px; height: 0; }
+.agenter-selection-preview::-webkit-scrollbar-thumb,
+.agenter-selection-chat-log::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--text-muted) 32%, transparent);
+  border-radius: 999px;
+}
+.agenter-selection-preview::-webkit-scrollbar-track,
+.agenter-selection-chat-log::-webkit-scrollbar-track { background: transparent; }
+.agenter-selection-preview,
+.agenter-selection-chat-log { scrollbar-width: thin; scrollbar-color: color-mix(in srgb, var(--text-muted) 30%, transparent) transparent; }
+
+/* Prompt builder in settings. */
+.agenter-prompt-builder { display: flex; flex-direction: column; gap: 10px; margin-bottom: 8px; }
+.agenter-prompt-card {
+  padding: 4px 12px 10px;
+  background: var(--background-secondary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 10px;
+}
+.agenter-prompt-card .setting-item { border-top: none; padding-block: 8px; }
+.agenter-prompt-card-body .setting-item-info { display: none; }
+.agenter-prompt-card-body .setting-item-control { width: 100%; }
+.agenter-prompt-textarea {
+  width: 100%;
+  font-family: var(--font-monospace);
+  font-size: 12px;
+  line-height: 1.5;
+  resize: vertical;
+}
+
+
+/* ============================================================
+   Agenter v1.1 — overlay chat-history, unified contextual chat,
+   inline tool approval, handoff to main panel
+   ============================================================ */
+
+/* Chat-history panel now floats ON TOP of the chat column instead of
+   squashing it. */
+.agenter-body { position: relative; }
+.agenter-sidebar {
+  position: absolute;
+  top: 0; left: 0; bottom: 0;
+  width: 244px;
+  max-width: 82%;
+  z-index: 40;
+  border-right: 1px solid var(--agenter-border);
+  background: var(--agenter-bg-2);
+  box-shadow: 2px 0 26px rgba(0, 0, 0, 0.30);
+  transform: translateX(-104%);
+  transition: transform 0.22s cubic-bezier(0.4, 0, 0.2, 1);
+}
+.agenter-root.is-sidebar-open .agenter-sidebar {
+  display: flex;
+  transform: translateX(0);
+}
+.agenter-root:not(.is-sidebar-open) .agenter-sidebar {
+  display: flex;
+  pointer-events: none;
+}
+.agenter-sidebar-backdrop {
+  position: absolute;
+  inset: 0;
+  z-index: 30;
+  background: rgba(0, 0, 0, 0.30);
+  backdrop-filter: blur(1.5px);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.22s ease;
+}
+.agenter-root.is-sidebar-open .agenter-sidebar-backdrop {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+/* "Open in main" handoff button in the contextual head. */
+.agenter-selection-open-main {
+  margin-left: auto;
+  margin-right: 6px;
+  font-size: 11px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--agenter-accent-line, var(--agenter-border));
+  background: var(--agenter-accent-soft, transparent);
+  color: var(--agenter-accent, var(--text-normal));
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.12s, border-color 0.12s, color 0.12s;
+}
+.agenter-selection-open-main:hover {
+  background: var(--agenter-accent, var(--interactive-accent));
+  color: var(--text-on-accent, #fff);
+  border-color: transparent;
+}
+
+/* Inline tool-approval card inside the contextual chat. */
+.agenter-selection-approval {
+  margin: 6px 0;
+  padding: 8px 10px;
+  border-radius: 10px;
+  border: 1px solid var(--agenter-border);
+  background: var(--agenter-bg-2);
+  font-size: 12px;
+}
+.agenter-selection-approval.is-destructive {
+  border-color: var(--text-error, #e56458);
+}
+.agenter-selection-approval-label {
+  color: var(--agenter-text, var(--text-normal));
+  margin-bottom: 8px;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+}
+.agenter-selection-approval-actions {
+  display: flex;
+  gap: 6px;
+  justify-content: flex-end;
+}
+.agenter-selection-approval-actions button {
+  font-size: 12px;
+  padding: 4px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--agenter-border);
+  background: var(--agenter-bg);
+  color: var(--text-normal);
+  cursor: pointer;
+  transition: background 0.12s, border-color 0.12s;
+}
+.agenter-selection-approval-actions button:hover {
+  border-color: var(--agenter-accent-line, var(--agenter-border));
+}
+.agenter-selection-approval-actions button.is-primary {
+  background: var(--interactive-accent);
+  color: var(--text-on-accent, #fff);
+  border-color: transparent;
+}
+.agenter-selection-approval-status {
+  font-size: 11px;
+  color: var(--agenter-muted);
+  text-align: right;
+}
+
+/* ============================================================
+   v1.1.1 — focused quick-access header/preview correction only
+   ============================================================ */
+.agenter-selection-popover.is-contextual {
+  width: min(300px, calc(100vw - 16px)) !important;
+  padding: 8px !important;
+  gap: 6px !important;
+  border: 1px solid var(--background-modifier-border) !important;
+  border-radius: 8px !important;
+  background: var(--background-primary) !important;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, .22) !important;
+  -webkit-backdrop-filter: none !important;
+  backdrop-filter: none !important;
+  animation: none !important;
+}
+.agenter-selection-popover.is-contextual::before { display: none !important; }
+
+/* Compact, single-level header. */
+.agenter-selection-popover.is-contextual .agenter-selection-popover-head {
+  min-height: 30px !important;
+  height: 30px !important;
+  padding: 0 1px 6px !important;
+  gap: 6px !important;
+  color: var(--text-normal) !important;
+  border-bottom: 1px solid var(--background-modifier-border) !important;
+  font-size: 12px !important;
+  font-weight: 600 !important;
+}
+.agenter-selection-popover.is-contextual .agenter-selection-brand {
+  flex: 0 0 18px !important;
+  width: 18px !important;
+  height: 18px !important;
+  color: var(--interactive-accent) !important;
+  background: transparent !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  box-shadow: none !important;
+}
+.agenter-selection-popover.is-contextual .agenter-selection-brand svg {
+  width: 15px !important;
+  height: 15px !important;
+}
+.agenter-selection-popover.is-contextual .agenter-selection-popover-head > span:not(.agenter-selection-brand) {
+  flex: 1 1 auto !important;
+  min-width: 0;
+  font-size: 12px !important;
+}
+.agenter-selection-open-main {
+  flex: 0 0 auto !important;
+  min-height: 24px !important;
+  margin: 0 !important;
+  padding: 2px 7px !important;
+  color: var(--text-muted) !important;
+  background: transparent !important;
+  border: 0 !important;
+  border-radius: 4px !important;
+  box-shadow: none !important;
+  font-size: 10.5px !important;
+  font-weight: 500 !important;
+  line-height: 20px !important;
+}
+.agenter-selection-open-main:hover {
+  color: var(--text-normal) !important;
+  background: var(--background-modifier-hover) !important;
+}
+.agenter-selection-popover.is-contextual .agenter-selection-popover-close {
+  flex: 0 0 24px !important;
+  width: 24px !important;
+  height: 24px !important;
+  padding: 0 0 2px !important;
+  color: var(--text-muted) !important;
+  background: transparent !important;
+  border: 0 !important;
+  border-radius: 4px !important;
+  box-shadow: none !important;
+  font-size: 18px !important;
+  line-height: 22px !important;
+  transform: none !important;
+}
+.agenter-selection-popover.is-contextual .agenter-selection-popover-close:hover {
+  color: var(--text-normal) !important;
+  background: var(--background-modifier-hover) !important;
+  transform: none !important;
+}
+
+/* Preview uses one quiet disclosure row, not a second toolbar/pill. */
+.agenter-selection-preview-shell {
+  border: 1px solid var(--background-modifier-border) !important;
+  border-radius: 6px !important;
+  background: var(--background-secondary) !important;
+  box-shadow: none !important;
+  overflow: hidden !important;
+}
+.agenter-selection-preview-top {
+  box-sizing: border-box !important;
+  width: 100% !important;
+  height: 29px !important;
+  min-height: 29px !important;
+  flex: 0 0 29px !important;
+  padding: 0 8px !important;
+  color: var(--text-muted) !important;
+  background: transparent !important;
+  border: 0 !important;
+  border-bottom: 1px solid var(--background-modifier-border) !important;
+  border-radius: 0 !important;
+  box-shadow: none !important;
+  font-size: 10.5px !important;
+  font-weight: 500 !important;
+  letter-spacing: 0 !important;
+}
+.agenter-selection-preview-top:hover {
+  color: var(--text-normal) !important;
+  background: var(--background-modifier-hover) !important;
+}
+.agenter-selection-preview-top span:last-child {
+  display: inline !important;
+  padding: 0 !important;
+  color: var(--text-accent) !important;
+  background: transparent !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  font-size: 10.5px !important;
+  font-weight: 500 !important;
+}
+.agenter-selection-preview-shell .agenter-selection-preview {
+  box-sizing: border-box !important;
+  width: 100% !important;
+  max-width: 100% !important;
+  max-height: 68px !important;
+  margin: 0 !important;
+  padding: 7px 8px !important;
+  overflow-x: hidden !important;
+  overflow-y: auto !important;
+  color: var(--text-normal) !important;
+  background: var(--background-primary) !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  box-shadow: none !important;
+  font-size: 11px !important;
+  line-height: 1.45 !important;
+  scrollbar-width: thin;
+  scrollbar-color: var(--background-modifier-border-hover) transparent;
+}
+.agenter-selection-preview-shell.is-expanded .agenter-selection-preview {
+  max-height: min(260px, 46vh) !important;
+}
+.agenter-selection-preview::-webkit-scrollbar { width: 4px !important; height: 0 !important; }
+.agenter-selection-preview::-webkit-scrollbar-track { background: transparent !important; }
+.agenter-selection-preview::-webkit-scrollbar-thumb {
+  background: var(--background-modifier-border-hover) !important;
+  border-radius: 4px !important;
+}
+.agenter-selection-preview.markdown-rendered,
+.agenter-selection-preview.markdown-rendered * {
+  max-width: 100% !important;
+  overflow-wrap: anywhere !important;
+  word-break: break-word !important;
+}
+.agenter-selection-preview.markdown-rendered pre {
+  max-width: 100% !important;
+  overflow-x: auto !important;
+}
+
