@@ -1,4 +1,4 @@
-import { App, TFile, TFolder, Notice, requestUrl } from "obsidian";
+import { App, TFile, TFolder, requestUrl } from "obsidian";
 import { ToolDefinition, ToolCall } from "./api";
 
 export interface ToolResult {

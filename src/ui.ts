@@ -217,7 +217,7 @@ export class FloatingChatPanel {
 
     const stopBtn = mkIconBtn("square", "Stop generating", () => this.abort());
     stopBtn.addClass("agenter-stop");
-    stopBtn.style.display = "none";
+    stopBtn.setCssStyles({ display: "none" });
     const newBtn = mkIconBtn("plus", "New chat", () => this.newSession());
     const floatBtn = mkIconBtn(
       this.mode === "docked" ? "maximize-2" : "panel-right",
@@ -704,10 +704,10 @@ export class FloatingChatPanel {
     const rect = anchor.getBoundingClientRect();
     const width = 320;
     const left = Math.max(10, Math.min(rect.left, window.innerWidth - width - 10));
-    pop.style.left = `${left}px`;
+    pop.setCssStyles({ left: `${left}px` });
     const estimatedHeight = 250;
     const below = rect.bottom + 7;
-    pop.style.top = `${below + estimatedHeight > window.innerHeight ? Math.max(10, rect.top - estimatedHeight - 7) : below}px`;
+    pop.setCssStyles({ top: `${below + estimatedHeight > window.innerHeight ? Math.max(10, rect.top - estimatedHeight - 7) : below}px` });
 
     const close = (e: MouseEvent) => {
       if (!pop.contains(e.target as Node) && !anchor.contains(e.target as Node)) {
@@ -770,15 +770,14 @@ export class FloatingChatPanel {
     const height = this.rootEl.offsetHeight || this.plugin.settings.panelHeight || 600;
     this.pos.x = Math.max(10, Math.min(x + 12, window.innerWidth - width - 10));
     this.pos.y = Math.max(10, Math.min(y + 12, window.innerHeight - height - 10));
-    this.rootEl.style.left = `${this.pos.x}px`;
-    this.rootEl.style.top = `${this.pos.y}px`;
+    this.rootEl.setCssStyles({ left: `${this.pos.x}px`, top: `${this.pos.y}px` });
     this.inputEl.focus();
   }
 
   private autoGrow() {
     const el = this.inputEl;
-    el.style.height = "auto";
-    el.style.height = Math.min(el.scrollHeight, 160) + "px";
+    el.setCssStyles({ height: "auto" });
+    el.setCssStyles({ height: Math.min(el.scrollHeight, 160) + "px" });
   }
 
   // ----------------------------------------------------- provider menu
@@ -1006,7 +1005,10 @@ export class FloatingChatPanel {
     bubble.appendChild(label);
     const typing = document.createElement("div");
     typing.addClass("agenter-typing");
-    typing.innerHTML = "<span></span><span></span><span></span>";
+    typing.empty();
+    typing.createSpan();
+    typing.createSpan();
+    typing.createSpan();
     bubble.appendChild(typing);
     wrap.appendChild(bubble);
     this.messagesEl.appendChild(wrap);
@@ -1127,7 +1129,8 @@ export class FloatingChatPanel {
       head.appendChild(ico);
       const title = document.createElement("div");
       title.addClass("agenter-action-title");
-      title.innerHTML = `<strong>${meta.verb}</strong>`;
+      title.empty();
+      title.createEl("strong", { text: meta.verb });
       if (args.path) {
         const path = document.createElement("div");
         path.addClass("agenter-action-path");
@@ -1317,7 +1320,7 @@ export class FloatingChatPanel {
   private toggleStop(show: boolean) {
     const header = this.rootEl.querySelector(".agenter-header") as any;
     const stop = header?._stopBtn as HTMLElement | undefined;
-    if (stop) stop.style.display = show ? "flex" : "none";
+    if (stop) stop.setCssStyles({ display: show ? "flex" : "none" });
   }
 
   // ------------------------------------------------------------ context
@@ -1350,10 +1353,12 @@ export class FloatingChatPanel {
     this.minimized = !this.minimized;
     this.rootEl.toggleClass("is-minimized", this.minimized);
     if (this.minimized) {
-      this.rootEl.style.height = "auto";
+      this.rootEl.setCssStyles({ height: "auto" });
     } else {
-      this.rootEl.style.height =
-        this.mode === "floating" ? `${this.plugin.settings.panelHeight}px` : "100vh";
+      this.rootEl.setCssStyles({
+        height:
+          this.mode === "floating" ? `${this.plugin.settings.panelHeight}px` : "100vh",
+      });
     }
   }
 
@@ -1466,12 +1471,31 @@ function safeIcon(el: HTMLElement, icon: string, fallback = "•") {
   const path = paths[icon];
   el.empty();
   if (!path) {
-    el.textContent = fallback;
-    el.style.fontSize = "16px";
-    el.style.lineHeight = "1";
+    el.setText(fallback);
+    el.setCssStyles({ fontSize: "16px", lineHeight: "1" });
     return;
   }
-  el.innerHTML = `<svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${path}</svg>`;
+  const NS = "http://www.w3.org/2000/svg";
+  const svg = document.createElementNS(NS, "svg");
+  svg.setAttribute("viewBox", "0 0 24 24");
+  svg.setAttribute("aria-hidden", "true");
+  svg.setAttribute("fill", "none");
+  svg.setAttribute("stroke", "currentColor");
+  svg.setAttribute("stroke-width", "1.8");
+  svg.setAttribute("stroke-linecap", "round");
+  svg.setAttribute("stroke-linejoin", "round");
+  const elRe = /<([a-zA-Z]+)([^>]*?)\/?>(?:<\/[a-zA-Z]+>)?/g;
+  const attrRe = /([a-zA-Z-]+)="([^"]*)"/g;
+  let elMatch: RegExpExecArray | null;
+  while ((elMatch = elRe.exec(path)) !== null) {
+    const child = document.createElementNS(NS, elMatch[1]);
+    let attrMatch: RegExpExecArray | null;
+    while ((attrMatch = attrRe.exec(elMatch[2])) !== null) {
+      child.setAttribute(attrMatch[1], attrMatch[2]);
+    }
+    svg.appendChild(child);
+  }
+  el.appendChild(svg);
 }
 
 function mkIconBtn(

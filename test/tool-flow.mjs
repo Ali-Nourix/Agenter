@@ -29,6 +29,11 @@ for (const proto of [window.HTMLElement.prototype]) {
   proto.hasClass = function (c) { return hasClass(this, c); };
   proto.setText = function (t) { this.textContent = t; };
   proto.empty = function () { while (this.firstChild) this.removeChild(this.firstChild); };
+  proto.setCssStyles = function (styles) { for (const k in styles) { try { this.style[k] = styles[k]; } catch (e) {} } };
+  proto.setCssProps = function (props) { for (const k in props) { try { this.style.setProperty(k, props[k]); } catch (e) {} } };
+  proto.createEl = function (tag, o) { const el = document.createElement(tag); if (o) { if (o.cls) { const cls = Array.isArray(o.cls) ? o.cls : [o.cls]; el.classList.add(...cls); } if (o.text != null) el.textContent = o.text; if (o.type) el.setAttribute('type', o.type); if (o.href != null) el.setAttribute('href', o.href); if (o.title != null) el.setAttribute('title', o.title); if (o.placeholder != null) el.setAttribute('placeholder', o.placeholder); if (o.value != null) el.value = o.value; if (o.attr) { for (const k in o.attr) el.setAttribute(k, o.attr[k]); } } this.appendChild(el); return el; };
+  proto.createDiv = function (o) { return this.createEl('div', typeof o === 'string' ? { cls: o } : o); };
+  proto.createSpan = function (o) { return this.createEl('span', typeof o === 'string' ? { cls: o } : o); };
 }
 
 const obsidianMock = `

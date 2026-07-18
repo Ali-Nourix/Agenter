@@ -1,7 +1,7 @@
-import { App, Notice } from "obsidian";
+import { App } from "obsidian";
 import { AgentSettings, getActiveProvider } from "./settings";
 import { createProvider, ChatMessage, ToolDefinition, ToolCall } from "./api";
-import { ToolRegistry, ToolResult } from "./tools";
+import { ToolRegistry } from "./tools";
 
 export interface ChatCallbacks {
   onAssistantToken: (token: string) => void;
