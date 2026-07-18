@@ -2741,19 +2741,6 @@ Pick a context scope above, then ask me anything.`
       target.setText(text);
     });
   }
-  attachCopyButton(msgEl, getText) {
-    const btn = document.createElement("button");
-    btn.addClass("agenter-copy-btn");
-    safeIcon(btn, "copy");
-    btn.title = "Copy";
-    btn.addEventListener("click", async (e) => {
-      e.stopPropagation();
-      await navigator.clipboard.writeText(getText());
-      safeIcon(btn, "check");
-      window.setTimeout(() => safeIcon(btn, "copy"), 1200);
-    });
-    msgEl.appendChild(btn);
-  }
   showTyping() {
     const wrap = document.createElement("div");
     wrap.addClass("agenter-msg", "agenter-msg-assistant", "is-typing");
