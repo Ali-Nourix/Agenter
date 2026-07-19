@@ -658,7 +658,7 @@ var AgentSettingTab = class extends import_obsidian2.PluginSettingTab {
         marginBottom: "12px"
       });
       new import_obsidian2.Setting(wrapper).setName(`Provider: ${provider.name}`).setDesc(`Type: ${provider.type}`).addButton(
-        (btn) => btn.setButtonText("Remove").setDestructive().onClick(async () => {
+        (btn) => btn.setButtonText("Remove").onClick(async () => {
           this.plugin.settings.providers = this.plugin.settings.providers.filter(
             (p) => p.id !== provider.id
           );

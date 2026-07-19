@@ -262,7 +262,7 @@ export class AgentSettingTab extends PluginSettingTab {
         .setName(`Provider: ${provider.name}`)
         .setDesc(`Type: ${provider.type}`)
         .addButton((btn) =>
-          btn.setButtonText("Remove").setDestructive().onClick(async () => {
+          btn.setButtonText("Remove").onClick(async () => {
             this.plugin.settings.providers = this.plugin.settings.providers.filter(
               (p) => p.id !== provider.id
             );

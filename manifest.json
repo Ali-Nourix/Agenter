@@ -1,7 +1,7 @@
 {
   "id": "agenter",
   "name": "Agenter",
-  "version": "1.1.5",
+  "version": "1.1.6",
   "minAppVersion": "1.7.2",
   "description": "Chat with AI providers using vault-scoped tools for notes, web search, selected text, custom prompts, and approval-based edits.",
   "author": "Ali",
