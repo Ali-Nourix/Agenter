@@ -368,6 +368,11 @@ export default class AgenterPlugin extends Plugin {
     popover.appendChild(composer);
 
     const orchestrator = new AgentOrchestrator(this.app, this.settings);
+    orchestrator.setAccessScope({
+      mode: sourcePath ? "note" : "none",
+      notePath: sourcePath || undefined,
+      folderPath: sourcePath.includes("/") ? sourcePath.slice(0, sourcePath.lastIndexOf("/")) : "",
+    });
     const session = getActiveSession(this.settings);
     // Unified history: continue the same conversation as the main panel
     // instead of starting from an empty context.
@@ -427,7 +432,7 @@ export default class AgenterPlugin extends Plugin {
       return bubble;
     };
 
-    const requestInlineApproval = (call: { name: string; arguments: string }): Promise<boolean> =>
+    const requestInlineApproval = (call: { name: string; arguments: string }, customLabel?: string): Promise<boolean> =>
       new Promise((resolve) => {
         let a: any = {};
         try { a = JSON.parse(call.arguments || "{}"); } catch { /* ignore */ }
@@ -438,7 +443,7 @@ export default class AgenterPlugin extends Plugin {
         const lbl = document.createElement("div");
         lbl.addClass("agenter-selection-approval-label");
         const verb = call.name.replace(/[-_]/g, " ");
-        lbl.textContent = a.path ? `${verb}: ${a.path}` : verb;
+        lbl.textContent = customLabel ?? (a.path ? `${verb}: ${a.path}` : verb);
         card.appendChild(lbl);
         const row = document.createElement("div");
         row.addClass("agenter-selection-approval-actions");
@@ -519,6 +524,10 @@ export default class AgenterPlugin extends Plugin {
         onToolResult: () => {},
         // Tool calls now work here too: read-only tools run automatically and
         // mutating tools show an inline Approve / Reject card.
+        onAccessRequest: (request) => requestInlineApproval(
+          { name: "access", arguments: "{}" },
+          `Allow ${request.requestedMode} access for this run${request.targetPath ? `: ${request.targetPath}` : ""}`
+        ),
         onApprovalRequest: (call) => requestInlineApproval(call),
         onError: (error) => {
           if (typing.parentNode) typing.remove();

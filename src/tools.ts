@@ -6,16 +6,91 @@ export interface ToolResult {
   output: string;
 }
 
+export type VaultScopeMode = "note" | "folder" | "vault" | "none";
+
+export interface VaultAccessScope {
+  mode: VaultScopeMode;
+  /** Note captured when this chat turn starts. */
+  notePath?: string;
+  /** Folder captured when this chat turn starts. Empty means vault root. */
+  folderPath?: string;
+}
+
+export interface VaultAccessRequest {
+  toolName: string;
+  currentMode: VaultScopeMode;
+  requestedMode: "note" | "folder" | "vault";
+  targetPath?: string;
+  secondaryPath?: string;
+  reason: string;
+}
+
+const VAULT_TOOLS = new Set([
+  "read_note", "write_note", "edit_note", "append_note", "search_notes",
+  "list_notes", "summarize_note", "get_note_images", "current_note",
+  "find_images", "read_note_section", "note_metadata", "note_links",
+  "list_folders", "create_folder", "move_note", "trash_note",
+]);
+
+const NOTE_SCOPE_TOOLS = new Set([
+  "read_note", "write_note", "edit_note", "append_note", "summarize_note",
+  "get_note_images", "current_note", "read_note_section", "note_metadata",
+  "note_links", "trash_note",
+]);
+
 /**
  * Registry of tools the agent can use. Each tool maps to an Obsidian
  * vault operation. Vision is provided by reading embedded/linked image
  * files as base64 data URIs and passing them to a vision-capable model.
  */
 export class ToolRegistry {
+  private accessScope: VaultAccessScope = { mode: "vault" };
+  private grantedNotes = new Set<string>();
+  private grantedFolders = new Set<string>();
+  private vaultGranted = false;
+
   constructor(private app: App) {}
 
+  setAccessScope(scope: VaultAccessScope): void {
+    const notePath = scope.notePath ? safeVaultPath(scope.notePath, true) : undefined;
+    const folderPath = String(scope.folderPath ?? "")
+      .trim()
+      .replace(/\\/g, "/")
+      .replace(/^\/+|\/+$/g, "");
+    this.accessScope = { mode: scope.mode, notePath, folderPath };
+    // Grants are intentionally per run. Calling setAccessScope for a new user
+    // turn resets every temporary permission from the previous run.
+    this.grantedNotes.clear();
+    this.grantedFolders.clear();
+    this.vaultGranted = false;
+  }
+
   getDefinitions(): ToolDefinition[] {
-    return [
+    const definitions: ToolDefinition[] = [
+      {
+        name: "request_access",
+        description:
+          "Proactively ask the user for temporary note, folder, or whole-vault access for the current run. Use this whenever the user asks you to get access, or before a task that needs context outside the initial scope. Never claim that you cannot request access. After approval, continue the same run and call the needed read/search/list tool.",
+        parameters: {
+          type: "object",
+          properties: {
+            scope: {
+              type: "string",
+              enum: ["note", "folder", "vault"],
+              description: "Smallest access level needed",
+            },
+            path: {
+              type: "string",
+              description: "Note/folder path. Omit for the current note/folder or for whole-vault access.",
+            },
+            reason: {
+              type: "string",
+              description: "Short user-facing explanation of why this access is needed",
+            },
+          },
+          required: ["scope", "reason"],
+        },
+      },
       {
         name: "read_note",
         description:
@@ -57,7 +132,7 @@ export class ToolRegistry {
       },
       {
         name: "append_note",
-        description: "Append markdown content to the end of an existing note.",
+        description: "Append markdown content to the end of an existing note. The note and its parent folder already exist; do not call create_folder before this tool.",
         parameters: {
           type: "object",
           properties: {
@@ -241,7 +316,7 @@ export class ToolRegistry {
       },
       {
         name: "create_folder",
-        description: "Create a folder inside the Obsidian vault. Requires user approval.",
+        description: "Ensure a folder exists inside the vault. This operation is idempotent: an existing folder is already successful. Requires user approval.",
         parameters: {
           type: "object",
           properties: { path: { type: "string", description: "Folder path inside the vault" } },
@@ -272,16 +347,157 @@ export class ToolRegistry {
         },
       },
     ];
+
+    // Keep every tool visible. Access is enforced immediately before execution,
+    // allowing the orchestrator to ask the user for a temporary grant instead
+    // of forcing the model to fail or restart the session.
+    return definitions;
+  }
+
+  getAccessRequest(call: ToolCall): VaultAccessRequest | null {
+    let args: any;
+    try { args = JSON.parse(call.arguments || "{}"); }
+    catch { return null; }
+
+    if (call.name === "request_access") {
+      const requested = ["note", "folder", "vault"].includes(args.scope)
+        ? args.scope as "note" | "folder" | "vault"
+        : "vault";
+      let targetPath = String(args.path ?? "").trim() || undefined;
+      if (requested === "note" && !targetPath) targetPath = this.accessScope.notePath;
+      if (requested === "folder" && !targetPath) targetPath = this.accessScope.folderPath;
+      // Vault root as a folder is effectively whole-vault access.
+      const requestedMode = requested === "folder" && !targetPath ? "vault" : requested;
+      return {
+        toolName: call.name,
+        currentMode: this.accessScope.mode,
+        requestedMode,
+        targetPath: requestedMode === "vault" ? undefined : targetPath,
+        reason: String(args.reason ?? "The assistant needs additional context to continue."),
+      };
+    }
+
+    if (!VAULT_TOOLS.has(call.name)) return null;
+    try {
+      this.enforceAccess(call.name, { ...args });
+      return null;
+    } catch (error: any) {
+      const reason = error?.message ?? String(error);
+      if (!/^Access denied:/.test(reason)) return null;
+      return this.describeAccessRequest(call.name, args, reason);
+    }
+  }
+
+  grantAccess(request: VaultAccessRequest): void {
+    if (request.requestedMode === "vault") {
+      this.vaultGranted = true;
+      return;
+    }
+    if (request.requestedMode === "folder" && request.targetPath !== undefined) {
+      this.grantedFolders.add(normalizeScopePath(request.targetPath));
+      return;
+    }
+    for (const path of [request.targetPath, request.secondaryPath]) {
+      if (path) this.grantedNotes.add(safeVaultPath(path));
+    }
+  }
+
+  private describeAccessRequest(name: string, args: any, reason: string): VaultAccessRequest {
+    const base = { toolName: name, currentMode: this.accessScope.mode, reason } as const;
+    if (name === "search_notes") return { ...base, requestedMode: "vault" };
+    if (["list_notes", "list_folders", "find_images"].includes(name)) {
+      const folder = String(args.folder ?? "").trim();
+      return !folder || folder === "vault"
+        ? { ...base, requestedMode: "vault" }
+        : { ...base, requestedMode: "folder", targetPath: folder };
+    }
+    if (name === "create_folder") {
+      return { ...base, requestedMode: "folder", targetPath: String(args.path ?? "") };
+    }
+    if (name === "move_note") {
+      return {
+        ...base,
+        requestedMode: "note",
+        targetPath: String(args.path ?? ""),
+        secondaryPath: String(args.destination ?? ""),
+      };
+    }
+    if (name === "current_note") {
+      return {
+        ...base,
+        requestedMode: this.accessScope.notePath ? "note" : "vault",
+        targetPath: this.accessScope.notePath,
+      };
+    }
+    return { ...base, requestedMode: "note", targetPath: String(args.path ?? "") };
   }
 
   async execute(call: ToolCall): Promise<ToolResult> {
     try {
       const args = JSON.parse(call.arguments || "{}");
+      this.enforceAccess(call.name, args);
       const out = await this.dispatch(call.name, args);
       return { callId: call.id, output: out };
     } catch (e: any) {
       return { callId: call.id, output: `Tool error: ${e.message ?? String(e)}` };
     }
+  }
+
+  private enforceAccess(name: string, args: any): void {
+    if (!VAULT_TOOLS.has(name) || this.accessScope.mode === "vault" || this.vaultGranted) return;
+
+    const pathTools = new Set([
+      "read_note", "write_note", "edit_note", "append_note", "summarize_note",
+      "get_note_images", "read_note_section", "note_metadata", "note_links", "trash_note",
+    ]);
+    if (pathTools.has(name)) {
+      this.assertPathAllowed(args.path, "path");
+      return;
+    }
+    if (name === "current_note") {
+      this.assertPathAllowed(this.accessScope.notePath, "current note");
+      return;
+    }
+    if (name === "move_note") {
+      this.assertPathAllowed(args.path, "path");
+      this.assertPathAllowed(args.destination, "destination");
+      return;
+    }
+    if (name === "create_folder") {
+      this.assertPathAllowed(args.path, "folder");
+      return;
+    }
+    if (name === "search_notes") {
+      throw new Error(`Access denied: "${name}" needs whole-vault access.`);
+    }
+    if (["list_notes", "list_folders", "find_images"].includes(name)) {
+      const requested = String(args.folder ?? "").trim();
+      if (!requested || requested === "vault") {
+        throw new Error(`Access denied: "${name}" needs whole-vault access.`);
+      }
+      this.assertPathAllowed(requested, "folder");
+    }
+  }
+
+  private assertPathAllowed(rawPath: unknown, label: string): void {
+    const path = safeVaultPath(String(rawPath ?? ""));
+    if (this.isPathAllowed(path)) return;
+    const scopeLabel = this.accessScope.mode === "note"
+      ? `note "${this.accessScope.notePath ?? ""}"`
+      : `folder "${this.accessScope.folderPath ?? ""}"`;
+    throw new Error(`Access denied: ${label} "${path}" is outside the selected ${scopeLabel} context.`);
+  }
+
+  private isPathAllowed(rawPath: string): boolean {
+    const path = normalizeScopePath(rawPath);
+    if (this.accessScope.mode === "vault" || this.vaultGranted) return true;
+    if ((this.accessScope.mode === "note" && path === this.accessScope.notePath) || this.grantedNotes.has(path)) return true;
+    const folders = new Set(this.grantedFolders);
+    if (this.accessScope.mode === "folder") folders.add(this.accessScope.folderPath ?? "");
+    for (const folder of folders) {
+      if (!folder || path === folder || path.startsWith(`${folder}/`)) return true;
+    }
+    return false;
   }
 
   private async dispatch(name: string, args: any): Promise<string> {
@@ -382,6 +598,7 @@ export class ToolRegistry {
     const q = query.toLowerCase();
     const results: string[] = [];
     for (const f of files) {
+      if (!this.isPathAllowed(f.path)) continue;
       const content = await this.app.vault.cachedRead(f);
       if (content.toLowerCase().includes(q)) {
         const idx = content.toLowerCase().indexOf(q);
@@ -403,7 +620,7 @@ export class ToolRegistry {
     }
     const out: string[] = [];
     VaultWalker(base, (file) => {
-      if (file instanceof TFile && out.length < limit) out.push(file.path);
+      if (file instanceof TFile && this.isPathAllowed(file.path) && out.length < limit) out.push(file.path);
     });
     return out.length ? out.join("\n") : "No notes found.";
   }
@@ -445,8 +662,12 @@ export class ToolRegistry {
   }
 
   private async currentNote(): Promise<string> {
-    const active = this.app.workspace.getActiveFile();
-    if (!active) return "No note currently open.";
+    const capturedPath = this.accessScope.notePath;
+    const active = capturedPath
+      ? this.app.vault.getAbstractFileByPath(capturedPath)
+      : this.app.workspace.getActiveFile();
+    if (!(active instanceof TFile)) return "No note available in the selected context.";
+    if (!this.isPathAllowed(active.path)) throw new Error("Access denied: active note is outside the selected context.");
     const content = await this.app.vault.read(active);
     return `Current note path: ${active.path}\n\n${content}`;
   }
@@ -533,9 +754,11 @@ export class ToolRegistry {
 
   private async createFolder(path: string): Promise<string> {
     const p = safeVaultPath(path);
-    if (this.app.vault.getAbstractFileByPath(p)) return `Path already exists: ${p}`;
+    const existing = this.app.vault.getAbstractFileByPath(p);
+    if (existing instanceof TFolder) return `Folder already available: ${p}`;
+    if (existing) return `Path already exists and is not a folder: ${p}`;
     await ensureFolder(this.app, p);
-    return `Created folder ${p}`;
+    return `Folder ready: ${p}`;
   }
 
   private async moveNote(path: string, destination: string): Promise<string> {
@@ -689,6 +912,7 @@ export class ToolRegistry {
     const out: string[] = [];
     VaultWalker(base, (file) => {
       if (out.length >= limit) return;
+      if (!this.isPathAllowed(file.path)) return;
       if (!isImageName(file.path)) return;
       if (q && !file.path.toLowerCase().includes(q)) return;
       const stat = (file as any).stat;
@@ -761,6 +985,10 @@ function isImageName(name: string): boolean {
   return /\.(png|jpe?g|gif|webp|bmp|svg)$/i.test(name);
 }
 
+function normalizeScopePath(input: string): string {
+  return String(input ?? "").trim().replace(/\\/g, "/").replace(/^\/+|\/+$/g, "");
+}
+
 function safeVaultPath(input: string, markdownOnly = false): string {
   const raw = String(input ?? "").trim().replace(/\\/g, "/");
   if (!raw) throw new Error("A vault-relative path is required.");
@@ -795,8 +1023,18 @@ async function ensureFolder(app: App, folder: string): Promise<void> {
   for (const part of clean) {
     current = current ? `${current}/${part}` : part;
     const found = app.vault.getAbstractFileByPath(current);
-    if (!found) await app.vault.createFolder(current);
-    else if (!(found instanceof TFolder)) throw new Error(`Not a folder: ${current}`);
+    if (found && !(found instanceof TFolder)) throw new Error(`Not a folder: ${current}`);
+    if (!found) {
+      try {
+        await app.vault.createFolder(current);
+      } catch (error: unknown) {
+        // Vault indexes can lag briefly or concurrent tool calls may create the
+        // same folder. Treat an already-existing folder as a successful ensure.
+        const afterCreate = app.vault.getAbstractFileByPath(current);
+        const message = error instanceof Error ? error.message : String(error);
+        if (!(afterCreate instanceof TFolder) && !/already exists/i.test(message)) throw error;
+      }
+    }
   }
 }
 
@@ -808,7 +1046,9 @@ async function ensureParentFolder(app: App, path: string): Promise<void> {
 async function createSafetyBackup(app: App, file: TFile, reason: string): Promise<string> {
   const folder = ".agenter-backups";
   // Internal helper intentionally owns this protected folder; model-provided paths never can.
-  if (!app.vault.getAbstractFileByPath(folder)) await app.vault.createFolder(folder);
+  // Use the idempotent helper because Vault/MCP indexes can briefly miss an
+  // existing hidden folder, causing createFolder to report "already exists".
+  await ensureFolder(app, folder);
   const stamp = new Date().toISOString().replace(/[:.]/g, "-");
   const safeName = file.path.replace(/[^a-zA-Z0-9._\u0600-\u06FF-]+/g, "_");
   let backup = `${folder}/${safeName}.${reason}.${stamp}.md`;

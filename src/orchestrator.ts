@@ -1,7 +1,7 @@
 import { App } from "obsidian";
 import { AgentSettings, getActiveProvider } from "./settings";
 import { createProvider, ChatMessage, ToolDefinition, ToolCall } from "./api";
-import { ToolRegistry } from "./tools";
+import { ToolRegistry, VaultAccessRequest, VaultAccessScope } from "./tools";
 
 export interface ChatCallbacks {
   onAssistantToken: (token: string) => void;
@@ -15,6 +15,8 @@ export interface ChatCallbacks {
    * tools run without prompting.
    */
   onApprovalRequest?: (call: ToolCall) => Promise<boolean>;
+  /** Ask for temporary note/folder/vault access without ending the run. */
+  onAccessRequest?: (request: VaultAccessRequest) => Promise<boolean>;
 }
 
 /**
@@ -42,6 +44,10 @@ export class AgentOrchestrator {
     this.messages = messages;
   }
 
+  setAccessScope(scope: VaultAccessScope): void {
+    this.toolRegistry.setAccessScope(scope);
+  }
+
   async run(userInput: string, cb: ChatCallbacks): Promise<void> {
     const provider = getActiveProvider(this.settings);
     if (!provider || !provider.apiKey) {
@@ -52,9 +58,17 @@ export class AgentOrchestrator {
       return;
     }
 
+    const accessProtocol = [
+      "Access protocol:",
+      "- You can request temporary note, folder, or vault access with request_access.",
+      "- If the user asks you to get access, call request_access immediately; never say you cannot request it.",
+      "- If the task needs context outside the initial scope, request the smallest sufficient scope proactively.",
+      "- After approval, continue the same run and call the relevant read/list/search tool.",
+      "- A denied request is not a failed session; continue within the available context.",
+    ].join("\n");
     const systemMsg: ChatMessage = {
       role: "system",
-      content: this.settings.systemPrompt,
+      content: `${this.settings.systemPrompt}\n\n${accessProtocol}`,
     };
 
     const conversation: ChatMessage[] = [
@@ -129,6 +143,39 @@ export class AgentOrchestrator {
       for (const call of toolCalls) {
         if (this.shouldAbort()) return;
         cb.onToolUse(call.name, call.arguments);
+
+        const accessRequest = this.toolRegistry.getAccessRequest(call);
+        if (accessRequest) {
+          const approved = cb.onAccessRequest
+            ? await cb.onAccessRequest(accessRequest)
+            : false;
+          if (this.shouldAbort()) return;
+          if (!approved) {
+            const msg = `The user denied additional ${accessRequest.requestedMode} access for "${call.name}". Continue within the current context and do not retry the same request unless the user asks.`;
+            cb.onToolResult(msg);
+            conversation.push({
+              role: "tool",
+              content: msg,
+              tool_call_id: call.id,
+              tool_name: call.name,
+            });
+            continue;
+          }
+          this.toolRegistry.grantAccess(accessRequest);
+
+          if (call.name === "request_access") {
+            const target = accessRequest.targetPath ? ` for "${accessRequest.targetPath}"` : "";
+            const msg = `The user granted temporary ${accessRequest.requestedMode} access${target} for this run. Continue now with the required tools; do not restart the conversation.`;
+            cb.onToolResult(msg);
+            conversation.push({
+              role: "tool",
+              content: msg,
+              tool_call_id: call.id,
+              tool_name: call.name,
+            });
+            continue;
+          }
+        }
 
         // Destructive actions can never bypass confirmation. Other mutations
         // follow the user's approval settings (enabled by default).

@@ -99,13 +99,33 @@ apiMod.OpenAIProvider.prototype.chat = async function(messages, tools, cb) {
   cb.onToolCalls?.([{ id: "call_1", name: "read_note", arguments: JSON.stringify({ path: "Note.md" }) }]);
   cb.onDone();
 };
+let runningCardSeen = false;
+let pathSeenWhileRunning = false;
+let openAfterResult = false;
+let collapsedOnAnswer = false;
+let accessCardSeen = false;
+let accessApproved = false;
 AgentOrchestrator.prototype.run = async function(userInput, cbb) {
   // 1) model asks to use read_note
   cbb.onAssistantToken("");
   cbb.onToolUse("read_note", JSON.stringify({ path: "Note.md" }));
+  let card = document.body.querySelector(".agenter-tool-line");
+  runningCardSeen = !!card?.classList.contains("is-running");
+  pathSeenWhileRunning = !!card?.textContent?.includes("Note.md");
   cbb.onToolResult("Content of Note.md: hello world");
-  // 2) model gives final answer
+  card = document.body.querySelector(".agenter-tool-line");
+  openAfterResult = !!card?.classList.contains("is-open") && !card?.classList.contains("is-running");
+  // 2) model proactively requests wider access, and the same run waits for the card.
+  cbb.onToolUse("request_access", JSON.stringify({ scope: "folder", path: "Projects", reason: "Need project notes" }));
+  const permission = cbb.onAccessRequest({ toolName: "request_access", currentMode: "note", requestedMode: "folder", targetPath: "Projects", reason: "Need project notes" });
+  const accessCard = document.body.querySelector(".agenter-action-card.is-access-request");
+  accessCardSeen = !!accessCard && accessCard.textContent.includes("Projects");
+  accessCard?.querySelector(".agenter-action-approve")?.click();
+  accessApproved = await permission;
+  cbb.onToolResult("The user granted temporary folder access for this run.");
+  // 3) model gives final answer; completed tool card must collapse automatically.
   cbb.onAssistantToken("I read your note. It says: hello world");
+  collapsedOnAnswer = !card?.classList.contains("is-open") && !card?.classList.contains("is-running");
   cbb.onDone();
 };
 
@@ -122,7 +142,12 @@ msgs.forEach((el) => {
   if (el.classList.contains("agenter-msg-assistant")) assistantMsgs++;
 });
 console.log("RENDERED_NODES:", msgs.length, "toolLines:", toolLines, "assistantMsgs:", assistantMsgs);
-console.log(toolLines >= 1 && assistantMsgs >= 1 ? "TOOL_FLOW_OK" : "TOOL_FLOW_FAIL");
+const timeline = document.body.querySelector(".agenter-activity-timeline");
+const timelineOk = !!timeline && timeline.classList.contains("is-complete") && !timeline.classList.contains("is-open") && timeline.querySelectorAll(".agenter-activity-step").length >= 4;
+const lifecycleOk = runningCardSeen && pathSeenWhileRunning && openAfterResult && collapsedOnAnswer && accessCardSeen && accessApproved && timelineOk;
+console.log("TOOL_CARD_LIFECYCLE:", { runningCardSeen, pathSeenWhileRunning, openAfterResult, collapsedOnAnswer, accessCardSeen, accessApproved, timelineOk });
+console.log(toolLines >= 1 && assistantMsgs >= 1 && lifecycleOk ? "TOOL_FLOW_OK" : "TOOL_FLOW_FAIL");
+if (!lifecycleOk) throw new Error("tool/access/timeline lifecycle failed");
 `;
 
 const result = await build({

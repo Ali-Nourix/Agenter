@@ -18,6 +18,7 @@ import {
   deriveTitle,
 } from "./settings";
 import { probeModels } from "./api";
+import { VaultAccessRequest, VaultAccessScope } from "./tools";
 
 type Scope = "note" | "folder" | "vault" | "none";
 type Mode = "docked" | "floating";
@@ -34,6 +35,7 @@ export interface FloatingChatPanelOptions {
  *  Icons below are all confirmed-present in Obsidian's bundled Lucide
  *  icon set, so setIcon() always renders something. */
 const TOOL_LABELS: Record<string, { icon: string; verb: string }> = {
+  request_access: { icon: "shield-question", verb: "Request access" },
   write_note: { icon: "file-plus", verb: "Create / overwrite note" },
   edit_note: { icon: "pencil", verb: "Edit note" },
   append_note: { icon: "plus", verb: "Append to note" },
@@ -107,6 +109,15 @@ export class FloatingChatPanel {
   private statusResetTimer: number | null = null;
   private hadError = false;
   private destroyed = false;
+  private activityTimelineEl: HTMLElement | null = null;
+  private activityListEl: HTMLElement | null = null;
+  private activityCurrentStep: HTMLElement | null = null;
+  private activityCurrentKey = "";
+  private autoFollow = true;
+  private applyingAutoScroll = false;
+  private scrollFrame: number | null = null;
+  private scrollSettleTimer: number | null = null;
+  private scrollResizeObserver: ResizeObserver | null = null;
 
   constructor(plugin: AgenterPlugin, options: FloatingChatPanelOptions = {}) {
     this.plugin = plugin;
@@ -445,6 +456,24 @@ export class FloatingChatPanel {
     messages.addClass("agenter-messages");
     root.appendChild(messages);
     this.messagesEl = messages;
+
+    // User intent always wins. Once they scroll away from the bottom, live
+    // tool/message updates stop pulling the viewport until they return.
+    messages.addEventListener("scroll", () => {
+      if (this.applyingAutoScroll) return;
+      this.autoFollow = this.isNearBottom();
+    }, { passive: true });
+    messages.addEventListener("wheel", (event) => {
+      if (event.deltaY < 0) this.autoFollow = false;
+    }, { passive: true });
+
+    // Tool cards animate their height while opening/closing. Observing each
+    // dynamic child keeps a following viewport pinned without competing jumps.
+    if (typeof ResizeObserver !== "undefined") {
+      this.scrollResizeObserver = new ResizeObserver(() => {
+        if (this.autoFollow) this.scrollToBottom();
+      });
+    }
   }
 
   private buildInput(root: HTMLElement) {
@@ -864,7 +893,7 @@ export class FloatingChatPanel {
         this.messages.push({ role: m.role as any, content: m.content });
       }
     }
-    this.scrollToBottom();
+    this.scrollToBottom(true);
   }
 
   private async persist() {
@@ -924,6 +953,7 @@ export class FloatingChatPanel {
     this.renderMarkdown(text, bubble);
 
     this.messagesEl.appendChild(el);
+    this.trackScrollElement(el);
     this.scrollToBottom();
     return el;
   }
@@ -934,22 +964,25 @@ export class FloatingChatPanel {
     el.dataset.raw = text;
     this.renderMarkdown(text, el);
     this.messagesEl.appendChild(el);
+    this.trackScrollElement(el);
     this.scrollToBottom();
     return el;
   }
 
   /** A compact one-line indicator that a (non-mutating) tool ran. */
-  private appendToolLine(name: string, result: string, args: any = {}): HTMLElement {
+  private appendToolLine(name: string, result: string, args: any = {}, running = false): HTMLElement {
     const el = document.createElement("div");
     el.addClass("agenter-tool-line");
+    if (running) el.addClass("is-running");
     el.dataset.toolName = name;
     el.dataset.raw = result;
     const documentTools = new Set(["read_note", "read_note_section", "summarize_note", "current_note"]);
-    if (documentTools.has(name)) el.addClass("is-document", "is-open");
+    if (documentTools.has(name)) el.addClass("is-document");
 
     const head = document.createElement("div");
     head.addClass("agenter-tool-line-head");
     const ico = document.createElement("span");
+    ico.addClass("agenter-tool-running-icon");
     safeIcon(ico, TOOL_LABELS[name]?.icon ?? "wrench");
     head.appendChild(ico);
     const labelWrap = document.createElement("span");
@@ -972,22 +1005,42 @@ export class FloatingChatPanel {
     const body = document.createElement("div");
     body.addClass("agenter-tool-line-body", "markdown-rendered");
     const sourcePath = typeof args?.path === "string" ? args.path : "";
-    this.renderMarkdown(result, body, sourcePath);
+    if (result) this.renderMarkdown(result, body, sourcePath);
     el.appendChild(body);
 
     head.addEventListener("click", () => el.toggleClass("is-open", !el.hasClass("is-open")));
     this.messagesEl.appendChild(el);
+    this.trackScrollElement(el);
     this.scrollToBottom();
     return el;
+  }
+
+  private completeToolLine(el: HTMLElement, name: string, result: string, args: any = {}): void {
+    el.removeClass("is-running");
+    el.dataset.toolName = name;
+    el.dataset.raw = result;
+    const body = el.querySelector(".agenter-tool-line-body") as HTMLElement | null;
+    if (body) this.renderMarkdown(result, body, typeof args?.path === "string" ? args.path : "");
+    const documentTools = new Set(["read_note", "read_note_section", "summarize_note", "current_note"]);
+    if (documentTools.has(name)) el.addClass("is-document", "is-open");
+    this.scrollToBottom();
+  }
+
+  private collapseToolLine(el: HTMLElement | null): void {
+    if (!el) return;
+    el.removeClass("is-open", "is-running");
   }
 
   private renderMarkdown(text: string, target: HTMLElement, sourcePath = "") {
     target.empty();
     target.addClass("markdown-rendered");
     target.setAttribute("dir", detectTextDirection(text));
-    MarkdownRenderer.render(this.app, text, target, sourcePath, this.component).catch(() => {
-      target.setText(text);
-    });
+    MarkdownRenderer.render(this.app, text, target, sourcePath, this.component)
+      .then(() => this.scrollToBottom())
+      .catch(() => {
+        target.setText(text);
+        this.scrollToBottom();
+      });
   }
 
   private showTyping(): HTMLElement {
@@ -1012,19 +1065,121 @@ export class FloatingChatPanel {
     bubble.appendChild(typing);
     wrap.appendChild(bubble);
     this.messagesEl.appendChild(wrap);
+    this.trackScrollElement(wrap);
     this.scrollToBottom();
     return wrap;
+  }
+
+  private startActivityTimeline(): void {
+    const timeline = document.createElement("section");
+    timeline.addClass("agenter-activity-timeline", "is-running", "is-open");
+    timeline.setAttribute("aria-label", "Agenter activity");
+
+    const head = document.createElement("button");
+    head.type = "button";
+    head.addClass("agenter-activity-head");
+    const avatar = document.createElement("span");
+    avatar.addClass("agenter-activity-avatar");
+    safeIcon(avatar, "sparkles");
+    const title = document.createElement("span");
+    title.addClass("agenter-activity-title");
+    title.textContent = "Focusing";
+    const elapsed = document.createElement("span");
+    elapsed.addClass("agenter-activity-elapsed");
+    const chevron = document.createElement("span");
+    chevron.addClass("agenter-activity-chevron");
+    safeIcon(chevron, "chevron-down");
+    head.append(avatar, title, elapsed, chevron);
+    head.addEventListener("click", () => timeline.toggleClass("is-open", !timeline.hasClass("is-open")));
+    timeline.appendChild(head);
+
+    const list = document.createElement("div");
+    list.addClass("agenter-activity-list");
+    timeline.appendChild(list);
+    this.messagesEl.appendChild(timeline);
+    this.trackScrollElement(timeline);
+    this.activityTimelineEl = timeline;
+    this.activityListEl = list;
+    this.activityCurrentStep = null;
+    this.activityCurrentKey = "";
+    this.advanceActivity("focus", "Understanding your request", "Preparing the initial context");
+    this.scrollToBottom();
+  }
+
+  private advanceActivity(key: string, label: string, detail = ""): void {
+    if (!this.activityTimelineEl || !this.activityListEl) return;
+    if (this.activityCurrentKey === key && this.activityCurrentStep) {
+      const labelEl = this.activityCurrentStep.querySelector(".agenter-activity-step-label") as HTMLElement | null;
+      const detailEl = this.activityCurrentStep.querySelector(".agenter-activity-step-detail") as HTMLElement | null;
+      if (labelEl) labelEl.textContent = label;
+      if (detailEl) detailEl.textContent = detail;
+      return;
+    }
+    if (this.activityCurrentStep) {
+      this.activityCurrentStep.removeClass("is-active", "is-expanded");
+      this.activityCurrentStep.addClass("is-done");
+      this.activityCurrentStep.setAttribute("aria-current", "false");
+    }
+    const step = document.createElement("button");
+    step.type = "button";
+    step.addClass("agenter-activity-step", "is-active", "is-expanded");
+    step.dataset.key = key;
+    step.setAttribute("aria-current", "step");
+    const marker = document.createElement("span");
+    marker.addClass("agenter-activity-marker");
+    const copy = document.createElement("span");
+    copy.addClass("agenter-activity-copy");
+    const labelEl = document.createElement("span");
+    labelEl.addClass("agenter-activity-step-label");
+    labelEl.textContent = label;
+    const detailEl = document.createElement("span");
+    detailEl.addClass("agenter-activity-step-detail");
+    detailEl.textContent = detail;
+    copy.append(labelEl, detailEl);
+    const arrow = document.createElement("span");
+    arrow.addClass("agenter-activity-step-arrow");
+    safeIcon(arrow, "chevron-right");
+    step.append(marker, copy, arrow);
+    step.addEventListener("click", () => step.toggleClass("is-expanded", !step.hasClass("is-expanded")));
+    this.activityListEl.appendChild(step);
+    this.activityCurrentStep = step;
+    this.activityCurrentKey = key;
+    this.scrollToBottom();
+  }
+
+  private completeActivityTimeline(label: string, failed = false): void {
+    if (!this.activityTimelineEl) return;
+    if (this.activityCurrentStep) {
+      this.activityCurrentStep.removeClass("is-active", "is-expanded");
+      this.activityCurrentStep.addClass(failed ? "is-error" : "is-done");
+    }
+    this.activityTimelineEl.removeClass("is-running", "is-open");
+    this.activityTimelineEl.addClass(failed ? "is-error" : "is-complete");
+    const title = this.activityTimelineEl.querySelector(".agenter-activity-title") as HTMLElement | null;
+    const elapsed = this.activityTimelineEl.querySelector(".agenter-activity-elapsed") as HTMLElement | null;
+    if (title) title.textContent = label;
+    if (elapsed) elapsed.textContent = this.startedAt ? this.formatElapsed(Date.now() - this.startedAt) : "";
+    this.activityCurrentStep = null;
+    this.activityCurrentKey = "";
+  }
+
+  private activityTarget(args: any): string {
+    return String(args?.path ?? args?.folder ?? args?.url ?? args?.query ?? "").trim();
   }
 
   private beginActivity() {
     this.startedAt = Date.now();
     this.hadError = false;
     this.rootEl.addClass("is-busy");
+    this.startActivityTimeline();
     this.setStatus("thinking", "Thinking");
     this.clearStatusTimers();
     this.statusTimer = window.setInterval(() => {
       if (!this.busy) return;
-      this.statusMetaEl.textContent = this.formatElapsed(Date.now() - this.startedAt);
+      const elapsed = this.formatElapsed(Date.now() - this.startedAt);
+      this.statusMetaEl.textContent = elapsed;
+      const timelineElapsed = this.activityTimelineEl?.querySelector(".agenter-activity-elapsed") as HTMLElement | null;
+      if (timelineElapsed) timelineElapsed.textContent = elapsed;
     }, 250);
   }
 
@@ -1061,6 +1216,7 @@ export class FloatingChatPanel {
       this.statusTimer = null;
     }
     if (!this.hadError) this.setStatus("done", label, elapsed);
+    this.completeActivityTimeline(this.hadError ? "Stopped" : label, this.hadError);
     this.statusResetTimer = window.setTimeout(() => {
       if (!this.busy && !this.destroyed) this.setStatus("idle", "Ready");
     }, 2800);
@@ -1105,6 +1261,67 @@ export class FloatingChatPanel {
    * promise that resolves true (approve) / false (reject) once the user
    * clicks. Used by the orchestrator's onApprovalRequest hook.
    */
+
+  private requestAccess(request: VaultAccessRequest): Promise<boolean> {
+    return new Promise((resolve) => {
+      const scopeName = request.requestedMode === "vault"
+        ? "Whole vault"
+        : request.requestedMode === "folder" ? "Folder" : "Note";
+      this.setStatus("approval", "Access required", `${scopeName} · ${request.toolName}`);
+
+      const card = document.createElement("div");
+      card.addClass("agenter-action-card", "is-access-request");
+      const head = document.createElement("div");
+      head.addClass("agenter-action-head");
+      const ico = document.createElement("span");
+      ico.addClass("agenter-action-icon");
+      safeIcon(ico, "shield-check");
+      const title = document.createElement("div");
+      title.addClass("agenter-action-title");
+      title.createEl("strong", { text: `${scopeName} access required` });
+      title.createEl("div", { cls: "agenter-action-path", text: request.targetPath || "Entire vault" });
+      head.append(ico, title);
+      card.appendChild(head);
+
+      const preview = document.createElement("pre");
+      preview.addClass("agenter-action-preview");
+      preview.textContent = request.secondaryPath
+        ? `${request.toolName} needs these paths:
+${request.targetPath ?? ""}
+${request.secondaryPath}`
+        : `${request.toolName} needs ${scopeName.toLowerCase()} access to continue this run.
+The current chat will not restart.`;
+      card.appendChild(preview);
+
+      const actions = document.createElement("div");
+      actions.addClass("agenter-action-buttons");
+      const reject = document.createElement("button");
+      reject.addClass("agenter-action-reject");
+      reject.textContent = "Keep current scope";
+      const approve = document.createElement("button");
+      approve.addClass("agenter-action-approve");
+      approve.textContent = "Allow for this run";
+      actions.append(reject, approve);
+      card.appendChild(actions);
+
+      const settle = (ok: boolean) => {
+        actions.remove();
+        const status = document.createElement("div");
+        status.addClass("agenter-action-status", ok ? "is-approved" : "is-rejected");
+        status.textContent = ok ? "✓ Access allowed for this run" : "✕ Access denied";
+        card.appendChild(status);
+        card.addClass(ok ? "is-approved" : "is-rejected");
+        this.setStatus("thinking", ok ? "Continuing same run" : "Continuing with current scope");
+        resolve(ok);
+      };
+      approve.addEventListener("click", () => settle(true));
+      reject.addEventListener("click", () => settle(false));
+      this.messagesEl.appendChild(card);
+      this.trackScrollElement(card);
+      this.scrollToBottom();
+    });
+  }
+
   private requestApproval(call: ToolCall): Promise<boolean> {
     return new Promise((resolve) => {
       this.setStatus("approval", "Waiting for approval", TOOL_LABELS[call.name]?.verb ?? call.name);
@@ -1192,6 +1409,7 @@ export class FloatingChatPanel {
       reject.addEventListener("click", () => settle(false));
 
       this.messagesEl.appendChild(card);
+      this.trackScrollElement(card);
       this.scrollToBottom();
     });
   }
@@ -1220,6 +1438,7 @@ export class FloatingChatPanel {
     const welcome = this.messagesEl.querySelector(".agenter-msg-assistant");
     if (!this.messages.length && welcome) this.messagesEl.empty();
 
+    this.autoFollow = true;
     this.appendMessage("user", text);
     this.messages.push({ role: "user", content: text });
 
@@ -1230,9 +1449,11 @@ export class FloatingChatPanel {
     this.beginActivity();
     const typing = this.showTyping();
 
-    const contextNote = this.buildContextNote();
+    const accessScope = this.buildAccessScope();
+    const contextNote = this.buildContextNote(accessScope);
     const prompt = contextNote ? `${contextNote}\n\n${text}` : text;
 
+    this.orchestrator.setAccessScope(accessScope);
     this.orchestrator.setMessages(this.messages.slice(0, -1));
     this.orchestrator.shouldAbort = () => this.aborted;
     this.streamBuf = "";
@@ -1242,10 +1463,15 @@ export class FloatingChatPanel {
     // can be labelled correctly when onToolResult fires.
     let pendingTool: string | null = null;
     let pendingToolArgs: any = {};
+    let activeToolLine: HTMLElement | null = null;
 
     const cb: ChatCallbacks = {
       onAssistantToken: (t) => {
         if (this.aborted) return;
+        if (activeToolLine && !activeToolLine.hasClass("is-running")) {
+          this.collapseToolLine(activeToolLine);
+          activeToolLine = null;
+        }
         if (typing.parentNode) typing.remove();
         if (!this.streamEl) {
           this.streamEl = this.appendMessage("assistant", "");
@@ -1253,34 +1479,62 @@ export class FloatingChatPanel {
         }
         this.streamBuf += t;
         this.streamEl.dataset.raw = this.streamBuf;
+        this.advanceActivity("responding", "Writing the response", "Composing the final answer");
         this.setStatus("responding", "Writing response");
         this.scheduleStreamRender();
       },
       onToolUse: (name, args) => {
         if (this.aborted) return;
+        this.collapseToolLine(activeToolLine);
         this.flushStreamRender();
         // Reset the streaming target so text after a tool starts a fresh bubble.
         this.streamEl = null;
         this.streamBuf = "";
         pendingTool = name;
         try { pendingToolArgs = JSON.parse(args || "{}"); } catch { pendingToolArgs = {}; }
+        activeToolLine = this.appendToolLine(name, "", pendingToolArgs, true);
+        const activityLabel = name === "request_access"
+          ? `Preparing ${pendingToolArgs.scope ?? "additional"} access`
+          : (TOOL_LABELS[name]?.verb ?? `Running ${name}`);
+        this.advanceActivity(`tool-${name}`, activityLabel, this.activityTarget(pendingToolArgs));
         this.setStatus("tool", TOOL_LABELS[name]?.verb ?? `Running ${name}`);
       },
       onToolResult: (result) => {
         if (this.aborted) return;
-        this.appendToolLine(pendingTool ?? "tool", result, pendingToolArgs);
+        if (activeToolLine) this.completeToolLine(activeToolLine, pendingTool ?? "tool", result, pendingToolArgs);
+        else activeToolLine = this.appendToolLine(pendingTool ?? "tool", result, pendingToolArgs);
         pendingTool = null;
         pendingToolArgs = {};
+        this.advanceActivity("review", "Reviewing the result", "Deciding the next step");
         this.setStatus("thinking", "Reviewing tool result");
       },
-      onApprovalRequest: (call) => this.requestApproval(call),
+      onAccessRequest: async (request) => {
+        const scopeName = request.requestedMode === "vault" ? "vault" : request.requestedMode;
+        this.advanceActivity(`access-${scopeName}`, `Requesting ${scopeName} access`, request.targetPath ?? request.reason);
+        const approved = await this.requestAccess(request);
+        this.advanceActivity(
+          approved ? `access-granted-${scopeName}` : `access-denied-${scopeName}`,
+          approved ? `${scopeName[0].toUpperCase() + scopeName.slice(1)} access granted` : `${scopeName[0].toUpperCase() + scopeName.slice(1)} access denied`,
+          approved ? "Continuing the same run" : "Continuing within the current context"
+        );
+        return approved;
+      },
+      onApprovalRequest: async (call) => {
+        this.advanceActivity(`approval-${call.name}`, `Waiting for ${TOOL_LABELS[call.name]?.verb ?? call.name} approval`, "Review the action card below");
+        return this.requestApproval(call);
+      },
       onError: (err) => {
+        this.collapseToolLine(activeToolLine);
+        activeToolLine = null;
         if (typing.parentNode) typing.remove();
         this.hadError = true;
+        this.advanceActivity("error", "The run encountered an error", err);
         this.setStatus("error", "Request failed");
         this.appendSystem(`**Error:** ${err}`);
       },
       onDone: () => {
+        this.collapseToolLine(activeToolLine);
+        activeToolLine = null;
         this.flushStreamRender();
         this.sendBtn.disabled = false;
         this.toggleStop(false);
@@ -1324,22 +1578,25 @@ export class FloatingChatPanel {
   }
 
   // ------------------------------------------------------------ context
-  private buildContextNote(): string {
-    if (this.scope === "none") return "";
-    if (this.scope === "note") {
-      const file = this.app.workspace.getActiveFile();
-      if (!file) return "";
-      return `[Context: current note is "${file.path}". Use the current_note tool to read it.]`;
+  private buildAccessScope(): VaultAccessScope {
+    const file = this.app.workspace.getActiveFile();
+    return {
+      mode: this.scope,
+      notePath: file?.path,
+      folderPath: file?.parent?.path ?? "",
+    };
+  }
+
+  private buildContextNote(access: VaultAccessScope): string {
+    if (access.mode === "none") return "[Initial context access: none. If the user asks for access or vault content is needed, call request_access. Never claim that access cannot be requested; continue this same run after approval.]";
+    if (access.mode === "note") {
+      if (!access.notePath) return "[Context access: none. No active note is available.]";
+      return `[Initial context access: ONLY note "${access.notePath}". If the user asks for access, or the task needs another note, folder, or the whole vault, call request_access with the smallest sufficient scope. Never say you cannot request access. After approval, continue this same run.]`;
     }
-    if (this.scope === "folder") {
-      const file = this.app.workspace.getActiveFile();
-      const folder = file?.parent?.path ?? "";
-      return `[Context scope: folder "${folder}". Use list_notes / read_note / search_notes tools.]`;
+    if (access.mode === "folder") {
+      return `[Initial context access: ONLY folder "${access.folderPath ?? ""}" and its children. If more access is needed, call request_access with the smallest sufficient scope and continue this same run after approval.]`;
     }
-    if (this.scope === "vault") {
-      return `[Context scope: whole vault. Use list_notes / search_notes / read_note tools.]`;
-    }
-    return "";
+    return "[Context access: whole vault.]";
   }
 
   // ------------------------------------------------------------ controls
@@ -1386,8 +1643,44 @@ export class FloatingChatPanel {
     });
   }
 
-  private scrollToBottom() {
-    this.messagesEl.scrollTop = this.messagesEl.scrollHeight;
+  private isNearBottom(threshold = 72): boolean {
+    if (!this.messagesEl) return true;
+    const distance = this.messagesEl.scrollHeight - this.messagesEl.scrollTop - this.messagesEl.clientHeight;
+    return distance <= threshold;
+  }
+
+  private trackScrollElement(el: Element): void {
+    this.scrollResizeObserver?.observe(el);
+  }
+
+  private applyBottomScroll(): void {
+    if (!this.messagesEl || !this.autoFollow || this.destroyed) return;
+    this.applyingAutoScroll = true;
+    const target = Math.max(0, this.messagesEl.scrollHeight - this.messagesEl.clientHeight);
+    if (Math.abs(this.messagesEl.scrollTop - target) > 1) this.messagesEl.scrollTop = target;
+    window.requestAnimationFrame(() => { this.applyingAutoScroll = false; });
+  }
+
+  private scrollToBottom(force = false): void {
+    if (!this.messagesEl || this.destroyed) return;
+    if (force) this.autoFollow = true;
+    if (!this.autoFollow) return;
+
+    // Coalesce every append/render/collapse in this frame into one write.
+    if (this.scrollFrame === null) {
+      this.scrollFrame = window.requestAnimationFrame(() => {
+        this.scrollFrame = null;
+        this.applyBottomScroll();
+      });
+    }
+
+    // Markdown render and CSS height transitions may settle after the frame.
+    // Debounce one final correction instead of oscillating per mutation.
+    if (this.scrollSettleTimer !== null) window.clearTimeout(this.scrollSettleTimer);
+    this.scrollSettleTimer = window.setTimeout(() => {
+      this.scrollSettleTimer = null;
+      if (this.autoFollow) this.applyBottomScroll();
+    }, 90);
   }
 
   private getEditorSelection(): string | null {
@@ -1416,6 +1709,16 @@ export class FloatingChatPanel {
     this.destroyed = true;
     void this.persist();
     this.clearStatusTimers();
+    if (this.scrollFrame !== null) {
+      window.cancelAnimationFrame(this.scrollFrame);
+      this.scrollFrame = null;
+    }
+    if (this.scrollSettleTimer !== null) {
+      window.clearTimeout(this.scrollSettleTimer);
+      this.scrollSettleTimer = null;
+    }
+    this.scrollResizeObserver?.disconnect();
+    this.scrollResizeObserver = null;
     if (this.streamRenderTimer !== null) {
       window.clearTimeout(this.streamRenderTimer);
       this.streamRenderTimer = null;
