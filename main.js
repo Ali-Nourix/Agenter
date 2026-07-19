@@ -637,7 +637,6 @@ var AgentSettingTab = class extends import_obsidian2.PluginSettingTab {
   display() {
     const { containerEl } = this;
     containerEl.empty();
-    new import_obsidian2.Setting(containerEl).setName("Agenter Settings").setHeading();
     new import_obsidian2.Setting(containerEl).setName("Providers").setHeading();
     new import_obsidian2.Setting(containerEl).setName("Active provider").setDesc("Select which provider/model to use for chat.").addDropdown((dd) => {
       this.plugin.settings.providers.forEach((p) => {
@@ -659,7 +658,7 @@ var AgentSettingTab = class extends import_obsidian2.PluginSettingTab {
         marginBottom: "12px"
       });
       new import_obsidian2.Setting(wrapper).setName(`Provider: ${provider.name}`).setDesc(`Type: ${provider.type}`).addButton(
-        (btn) => btn.setButtonText("Remove").setWarning().onClick(async () => {
+        (btn) => btn.setButtonText("Remove").setDestructive().onClick(async () => {
           this.plugin.settings.providers = this.plugin.settings.providers.filter(
             (p) => p.id !== provider.id
           );
@@ -782,7 +781,7 @@ var AgentSettingTab = class extends import_obsidian2.PluginSettingTab {
       (btn) => btn.setButtonText("+ Add provider").onClick(() => {
         new ProviderModal(this.app, this.plugin, (provider) => {
           this.plugin.settings.providers.push(provider);
-          this.plugin.saveSettings();
+          void this.plugin.saveSettings();
           this.display();
         }).open();
       })

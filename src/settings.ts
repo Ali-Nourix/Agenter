@@ -231,8 +231,6 @@ export class AgentSettingTab extends PluginSettingTab {
     const { containerEl } = this;
     containerEl.empty();
 
-    new Setting(containerEl).setName("Agenter Settings").setHeading();
-
     // --- Providers ---
     new Setting(containerEl).setName("Providers").setHeading();
 
@@ -264,7 +262,7 @@ export class AgentSettingTab extends PluginSettingTab {
         .setName(`Provider: ${provider.name}`)
         .setDesc(`Type: ${provider.type}`)
         .addButton((btn) =>
-          btn.setButtonText("Remove").setWarning().onClick(async () => {
+          btn.setButtonText("Remove").setDestructive().onClick(async () => {
             this.plugin.settings.providers = this.plugin.settings.providers.filter(
               (p) => p.id !== provider.id
             );
@@ -404,7 +402,7 @@ export class AgentSettingTab extends PluginSettingTab {
       btn.setButtonText("+ Add provider").onClick(() => {
         new ProviderModal(this.app, this.plugin, (provider) => {
           this.plugin.settings.providers.push(provider);
-          this.plugin.saveSettings();
+          void this.plugin.saveSettings();
           this.display();
         }).open();
       })
