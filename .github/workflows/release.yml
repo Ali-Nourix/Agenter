@@ -7,51 +7,74 @@ on:
 
 permissions:
   contents: write
-  id-token: write
-  attestations: write
 
 jobs:
   release:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Check out repository
+      - name: Check out tagged source
         uses: actions/checkout@v4
 
-      - name: Set up Node.js
+      - name: Set up Node.js 20
         uses: actions/setup-node@v4
         with:
-          node-version: 20
-          cache: npm
+          node-version: "20.x"
+
+      - name: Show runtime versions
+        run: |
+          node --version
+          npm --version
+
+      - name: Validate all release versions
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          node <<'NODE'
+          const fs = require('fs');
+          const manifest = require('./manifest.json');
+          const pkg = require('./package.json');
+          const lock = require('./package-lock.json');
+          const versions = require('./versions.json');
+          const tag = process.env.RELEASE_TAG;
+          const values = {
+            tag,
+            manifest: manifest.version,
+            package: pkg.version,
+            packageLock: lock.version,
+            packageLockRoot: lock.packages?.['']?.version,
+          };
+          console.log(values);
+          for (const [name, value] of Object.entries(values)) {
+            if (value !== tag) throw new Error(`${name} is ${value}; expected ${tag}`);
+          }
+          if (versions[tag] !== manifest.minAppVersion) {
+            throw new Error(`versions.json is missing ${tag}: ${manifest.minAppVersion}`);
+          }
+          console.log(`Release metadata is consistent for ${tag}`);
+          NODE
 
       - name: Install dependencies
         run: npm ci
 
-      - name: Verify tag matches manifest version
-        shell: bash
-        run: |
-          manifest_version=$(node -p "require('./manifest.json').version")
-          if [ "$GITHUB_REF_NAME" != "$manifest_version" ]; then
-            echo "Tag $GITHUB_REF_NAME does not match manifest version $manifest_version"
-            exit 1
-          fi
+      - name: Run tests
+        run: npm test
 
       - name: Build plugin
         run: npm run build
 
-      - name: Generate artifact attestations
-        uses: actions/attest@v4
-        with:
-          subject-path: |
-            main.js
-            manifest.json
-            styles.css
+      - name: Verify release assets
+        run: |
+          test -s main.js
+          test -s manifest.json
+          test -s styles.css
 
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$GITHUB_REF_NAME" \
-            --title "$GITHUB_REF_NAME" \
+          gh release create "${GITHUB_REF_NAME}" \
+            --verify-tag \
+            --title "${GITHUB_REF_NAME}" \
             --generate-notes \
             main.js manifest.json styles.css

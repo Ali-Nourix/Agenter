@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.6.3 - Reliable GitHub release metadata
+
+- Fixed the reasoning brain icon and circular orbit animation.
+- Synchronized manifest, package, lockfile, and versions metadata.
+- Simplified the GitHub release workflow around Node.js 20 without cache or attestations.
+- Added tests before production build and release creation.
+
 ## 1.2.0 - Cloudflare Workers AI native client
 
 - Added native Cloudflare Workers AI provider with Account ID + API Token authentication.

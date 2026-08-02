@@ -1,7 +1,7 @@
 {
   "id": "agenter",
   "name": "Agenter",
-  "version": "1.6.1",
+  "version": "1.6.3",
   "minAppVersion": "1.7.2",
   "description": "AI agent for Obsidian with native Cloudflare Workers AI OAuth, live model discovery, multi-provider chat, and vault-scoped tools.",
   "author": "Ali",

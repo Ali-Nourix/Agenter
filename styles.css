@@ -4188,7 +4188,5 @@
 }
 @media (prefers-reduced-motion: reduce) {
   .agenter-msg.is-typing.is-reasoning-live .agenter-typing-visual::after,
-  .agenter-msg.is-typing.is-reasoning-live .agenter-typing-visual::before {
-    animation: none;
-  }
+  .agenter-msg.is-typing.is-reasoning-live .agenter-typing-visual::before { animation: none; }
 }
