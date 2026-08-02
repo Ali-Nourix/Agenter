@@ -1,0 +1,13 @@
+import { build } from "esbuild";
+import { createServer } from "http";
+import path from "path";
+import { fileURLToPath } from "url";
+const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),"..");
+const result=await build({entryPoints:[path.join(root,"src/api.ts")],bundle:true,format:"esm",platform:"node",write:false,plugins:[{name:"mock-obsidian",setup(c){c.onResolve({filter:/^obsidian$/},()=>({path:"obsidian",namespace:"mock"}));c.onLoad({filter:/.*/,namespace:"mock"},()=>({contents:'export const requestUrl=async()=>{throw new Error("unexpected fallback")}',loader:"js"}));}}]});
+const {OpenAIProvider}=await import("data:text/javascript;base64,"+Buffer.from(result.outputFiles[0].text).toString("base64"));
+const server=createServer((req,res)=>{req.resume();req.on("end",()=>{res.writeHead(200,{"Content-Type":"text/event-stream"});res.write('data: {"choices":[{"delta":{"reasoning_content":"checking facts"}}]}\n\n');res.write('data: {"choices":[{"delta":{"content":"final answer"}}]}\n\n');res.end('data: [DONE]\n\n');});});
+await new Promise(r=>server.listen(0,"127.0.0.1",r));const a=server.address();
+const provider=new OpenAIProvider({id:"r",name:"r",type:"openai-compatible",baseUrl:`http://127.0.0.1:${a.port}`,apiKey:"x",model:"reasoner",extraHeaders:"",supportsWebSearch:false,supportsVision:false});
+let reasoning="",answer="";await provider.chat([{role:"user",content:"think"}],[],{onReasoning:t=>reasoning+=t,onToken:t=>answer+=t,onDone(){},onError:e=>{throw e;}});server.close();
+if(reasoning!=="checking facts"||answer!=="final answer")throw new Error(JSON.stringify({reasoning,answer}));
+console.log("REASONING STREAM TEST PASSED");

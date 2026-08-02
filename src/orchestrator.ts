@@ -1,10 +1,12 @@
 import { App } from "obsidian";
 import { AgentSettings, getActiveProvider } from "./settings";
 import { createProvider, ChatMessage, ToolDefinition, ToolCall } from "./api";
+import { MessagePart } from "./provider-types";
 import { ToolRegistry, VaultAccessRequest, VaultAccessScope } from "./tools";
 
 export interface ChatCallbacks {
   onAssistantToken: (token: string) => void;
+  onReasoningToken?: (token: string) => void;
   onToolUse: (name: string, args: string) => void;
   onToolResult: (result: string) => void;
   onError: (err: string) => void;
@@ -48,7 +50,7 @@ export class AgentOrchestrator {
     this.toolRegistry.setAccessScope(scope);
   }
 
-  async run(userInput: string, cb: ChatCallbacks): Promise<void> {
+  async run(userInput: string, cb: ChatCallbacks, parts: MessagePart[] = []): Promise<void> {
     const provider = getActiveProvider(this.settings);
     if (!provider || !provider.apiKey) {
       cb.onError(
@@ -74,7 +76,7 @@ export class AgentOrchestrator {
     const conversation: ChatMessage[] = [
       systemMsg,
       ...this.messages,
-      { role: "user", content: userInput },
+      { role: "user", content: userInput, parts },
     ];
 
     const tools = this.toolRegistry
@@ -84,6 +86,7 @@ export class AgentOrchestrator {
     const adapter = createProvider(provider, {
       maxTokens: this.settings.maxTokens,
       temperature: this.settings.temperature,
+      modelOptions: this.settings.modelOptions?.[`${provider.id}:${provider.model}`] ?? {},
     });
 
     try {
@@ -100,8 +103,9 @@ export class AgentOrchestrator {
     conversation: ChatMessage[],
     cb: ChatCallbacks
   ): Promise<void> {
-    for (let round = 0; round < 6; round++) {
-      if (this.shouldAbort()) return;
+    // Continue until the model produces a final answer or the user stops the run.
+    // Tool-heavy workflows are no longer cut off by an arbitrary round count.
+    while (!this.shouldAbort()) {
 
       let assistantText = "";
       let toolCalls: ToolCall[] = [];
@@ -111,6 +115,10 @@ export class AgentOrchestrator {
           if (this.shouldAbort()) return;
           assistantText += t;
           cb.onAssistantToken(t);
+        },
+        onReasoning: (t) => {
+          if (this.shouldAbort()) return;
+          cb.onReasoningToken?.(t);
         },
         onToolCalls: (calls) => {
           toolCalls = calls;
@@ -201,12 +209,10 @@ export class AgentOrchestrator {
         conversation.push({
           role: "tool",
           content: res.output,
-          tool_call_id: res.callId,
+          tool_call_id: call.id,
           tool_name: call.name,
         });
       }
     }
-
-    cb.onError("Reached maximum tool-call rounds without a final answer.");
   }
 }

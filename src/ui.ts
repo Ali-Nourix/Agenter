@@ -18,7 +18,9 @@ import {
   deriveTitle,
 } from "./settings";
 import { probeModels } from "./api";
+import { capabilityBadges, ModelMetadata, MessagePart } from "./provider-types";
 import { VaultAccessRequest, VaultAccessScope } from "./tools";
+import { fetchCloudflareModelSchema } from "./cloudflare";
 
 type Scope = "note" | "folder" | "vault" | "none";
 type Mode = "docked" | "floating";
@@ -85,6 +87,9 @@ export class FloatingChatPanel {
   private inputEl!: HTMLTextAreaElement;
   private sendBtn!: HTMLButtonElement;
   private providerBtn!: HTMLButtonElement;
+  private modelSettingsBtn!: HTMLButtonElement;
+  private attachmentStripEl!: HTMLElement;
+  private pendingParts: MessagePart[] = [];
   private statusEl!: HTMLElement;
   private statusIconEl!: HTMLElement;
   private statusTextEl!: HTMLElement;
@@ -502,6 +507,13 @@ export class FloatingChatPanel {
     contextRow.appendChild(contextBtn);
     composer.appendChild(contextRow);
 
+    // --- Attachments selected for multimodal Workers AI models. ---
+    const attachmentStrip = document.createElement("div");
+    attachmentStrip.addClass("agenter-attachment-strip");
+    attachmentStrip.setCssStyles({ display: "none" });
+    this.attachmentStripEl = attachmentStrip;
+    composer.appendChild(attachmentStrip);
+
     // --- Middle: the text area. ---
     const input = document.createElement("textarea");
     input.addClass("agenter-input");
@@ -540,25 +552,33 @@ export class FloatingChatPanel {
     });
     footerLeft.appendChild(providerBtn);
 
-    const modelBtn = mkIconBtn("settings", "Model settings", (e) => {
+    const modelBtn = mkIconBtn("sliders-horizontal", "Settings supported by this model", (e) => {
       e?.stopPropagation();
       this.openModelMenu(modelBtn);
     });
     modelBtn.addClass("agenter-model-settings-btn");
+    this.modelSettingsBtn = modelBtn;
     footerLeft.appendChild(modelBtn);
     footer.appendChild(footerLeft);
 
     const footerRight = document.createElement("div");
     footerRight.addClass("agenter-composer-right");
 
-    const slashBtn = mkIconBtn("sparkles", "AI actions", (e) => {
+    const attachBtn = mkIconBtn("paperclip", "Attach image or audio", (e) => {
+      e?.stopPropagation();
+      void this.pickMediaAttachment();
+    });
+    attachBtn.addClass("agenter-inline-btn");
+    footerRight.appendChild(attachBtn);
+
+    const slashBtn = mkIconBtn("wand-sparkles", "Prompt actions", (e) => {
       e?.stopPropagation();
       this.openActionMenu(slashBtn);
     });
     slashBtn.addClass("agenter-inline-btn");
     footerRight.appendChild(slashBtn);
 
-    const pasteBtn = mkIconBtn("image", "Insert selected text from current note", () => {
+    const pasteBtn = mkIconBtn("text-quote", "Insert selected text from current note", () => {
       const sel = this.getEditorSelection();
       if (sel) {
         this.inputEl.value = this.inputEl.value
@@ -643,103 +663,137 @@ export class FloatingChatPanel {
     menu.showAtPosition({ x: rect.left, y: rect.bottom + 4 });
   }
 
-  private openModelMenu(anchor: HTMLElement) {
+  private async openModelMenu(anchor: HTMLElement) {
     document.querySelector(".agenter-model-popover")?.remove();
+    const provider = getActiveProvider(this.plugin.settings);
+    if (!provider) return;
+
     const pop = document.createElement("div");
     pop.addClass("agenter-model-popover");
+    const header = pop.createDiv({ cls: "agenter-model-popover-head" });
+    header.createEl("strong", { text: "Model settings" });
+    header.createEl("span", { text: provider.model });
 
-    const provider = getActiveProvider(this.plugin.settings);
-    const header = document.createElement("div");
-    header.addClass("agenter-model-popover-head");
-    const title = document.createElement("strong");
-    title.textContent = provider ? provider.name : "Model settings";
-    const model = document.createElement("span");
-    model.textContent = provider?.model ?? "No model selected";
-    header.append(title, model);
-    pop.appendChild(header);
+    const metadata = this.plugin.settings.modelCatalogs?.[provider.id]?.models.find((model) => model.id === provider.model);
+    const task = metadata?.task ?? provider.cloudflareModelTask ?? "";
+    if (task || metadata) {
+      const meta = pop.createDiv({ cls: "agenter-model-meta" });
+      meta.createSpan({ text: task || "Text generation" });
+      for (const badge of capabilityBadges(metadata).slice(0, 4)) meta.createSpan({ text: badge });
+    }
 
-    const addNumericControl = (
-      labelText: string,
-      min: number,
-      max: number,
-      step: number,
-      value: number,
-      onValue: (value: number) => void
-    ) => {
-      const row = document.createElement("div");
-      row.addClass("agenter-model-control");
-      const label = document.createElement("label");
-      label.textContent = labelText;
-      const number = document.createElement("input");
-      number.type = "number";
-      number.min = String(min);
-      number.max = String(max);
-      number.step = String(step);
-      number.value = String(value);
-      number.setAttribute("aria-label", labelText);
-      const range = document.createElement("input");
-      range.type = "range";
-      range.min = String(min);
-      range.max = String(max);
-      range.step = String(step);
-      range.value = String(value);
-      range.setAttribute("aria-label", `${labelText} slider`);
+    const loading = pop.createDiv({ cls: "agenter-model-loading", text: "Loading supported parameters…" });
+    document.body.appendChild(pop);
+    const place = () => {
+      const rect = anchor.getBoundingClientRect();
+      const width = 340;
+      const left = Math.max(10, Math.min(rect.left, window.innerWidth - width - 10));
+      const height = Math.min(520, pop.offsetHeight || 260);
+      const below = rect.bottom + 7;
+      pop.setCssStyles({ left: `${left}px`, top: `${below + height > window.innerHeight ? Math.max(10, rect.top - height - 7) : below}px` });
+    };
+    place();
 
-      const apply = (raw: string, commit = false) => {
-        const parsed = Number(raw);
-        if (!Number.isFinite(parsed)) return;
-        const next = Math.max(min, Math.min(max, parsed));
-        range.value = String(next);
-        if (commit) number.value = String(next);
-        onValue(next);
-        if (commit) void this.plugin.saveSettings();
-      };
-      range.addEventListener("input", () => {
-        number.value = range.value;
-        apply(range.value);
-      });
-      range.addEventListener("change", () => apply(range.value, true));
-      number.addEventListener("input", () => apply(number.value));
-      number.addEventListener("change", () => apply(number.value, true));
-      number.addEventListener("keydown", (e) => {
-        if (e.key === "Enter") { apply(number.value, true); number.blur(); }
-      });
+    const schema = provider.type === "cloudflare"
+      ? await fetchCloudflareModelSchema(provider, provider.model)
+      : null;
+    loading.remove();
 
-      const top = document.createElement("div");
-      top.addClass("agenter-model-control-top");
-      top.append(label, number);
-      row.append(top, range);
-      pop.appendChild(row);
+    const collectProperties = (node: any, target: Record<string, any> = {}) => {
+      if (!node || typeof node !== "object") return target;
+      if (node.properties && typeof node.properties === "object") Object.assign(target, node.properties);
+      for (const branch of ["oneOf", "anyOf", "allOf"]) {
+        if (Array.isArray(node[branch])) node[branch].forEach((item: any) => collectProperties(item, target));
+      }
+      return target;
+    };
+    const properties = collectProperties(schema?.input);
+    const modelKey = `${provider.id}:${provider.model}`;
+    if (!this.plugin.settings.modelOptions) this.plugin.settings.modelOptions = {};
+    const values = this.plugin.settings.modelOptions[modelKey] ?? {};
+    this.plugin.settings.modelOptions[modelKey] = values;
+
+    const labels: Record<string, string> = {
+      temperature: "Temperature", max_tokens: "Max output tokens", top_p: "Top P", top_k: "Top K",
+      steps: "Generation steps", seed: "Seed", guidance: "Guidance", width: "Width", height: "Height",
+      repetition_penalty: "Repetition penalty", frequency_penalty: "Frequency penalty", presence_penalty: "Presence penalty",
+      beam_size: "Beam size", vad_filter: "Voice activity detection", task: "Audio task", lang: "Language",
+      response_format: "Response format",
+    };
+    const fallbacks: Record<string, any> = {
+      temperature: { type: "number", minimum: 0, maximum: 2, default: this.plugin.settings.temperature, multipleOf: 0.1 },
+      max_tokens: { type: "integer", minimum: 1, maximum: metadata?.maxOutputTokens ?? 32768, default: this.plugin.settings.maxTokens },
+      top_p: { type: "number", minimum: 0, maximum: 1, default: 0.9, multipleOf: 0.05 },
+      top_k: { type: "integer", minimum: 1, maximum: 100, default: 40 },
+      steps: { type: "integer", minimum: 1, maximum: 20, default: 4 },
+      seed: { type: "integer", minimum: 0, maximum: 4294967295, default: 0 },
+    };
+    const taskLower = task.toLowerCase();
+    if (!Object.keys(properties).length) {
+      if (taskLower.includes("image") || /flux|phoenix|stable-diffusion|sdxl/.test(provider.model.toLowerCase())) {
+        properties.steps = fallbacks.steps; properties.seed = fallbacks.seed;
+      } else if (!taskLower.includes("speech") && !taskLower.includes("embedding")) {
+        properties.temperature = fallbacks.temperature; properties.max_tokens = fallbacks.max_tokens;
+      }
+    }
+
+    const supported = ["temperature", "max_tokens", "top_p", "top_k", "steps", "seed", "guidance", "width", "height", "repetition_penalty", "frequency_penalty", "presence_penalty", "beam_size", "vad_filter", "task", "lang", "response_format"];
+    let rendered = 0;
+    const save = (key: string, value: string | number | boolean) => {
+      values[key] = value;
+      void this.plugin.saveSettings();
     };
 
-    addNumericControl("Temperature", 0, 2, 0.1, this.plugin.settings.temperature, (v) => {
-      this.plugin.settings.temperature = Number(v.toFixed(1));
-    });
-    addNumericControl("Max tokens", 256, 128000, 256, this.plugin.settings.maxTokens, (v) => {
-      this.plugin.settings.maxTokens = Math.round(v);
-    });
+    for (const key of supported) {
+      const spec = properties[key];
+      if (!spec) continue;
+      const row = pop.createDiv({ cls: "agenter-model-control" });
+      const top = row.createDiv({ cls: "agenter-model-control-top" });
+      top.createEl("label", { text: labels[key] ?? key.replace(/_/g, " ") });
+      const enumValues = spec.enum ?? spec.oneOf?.map((item: any) => item.const).filter((value: any) => value !== undefined);
+      if (Array.isArray(enumValues) && enumValues.length) {
+        const select = top.createEl("select");
+        for (const option of enumValues) select.createEl("option", { text: String(option), value: String(option) });
+        select.value = String(values[key] ?? spec.default ?? enumValues[0]);
+        select.addEventListener("change", () => save(key, select.value));
+      } else if (spec.type === "boolean" || typeof spec.default === "boolean") {
+        const toggle = top.createEl("input");
+        toggle.type = "checkbox";
+        toggle.checked = Boolean(values[key] ?? spec.default ?? false);
+        toggle.addEventListener("change", () => save(key, toggle.checked));
+      } else {
+        const fallback = fallbacks[key] ?? {};
+        const min = Number(spec.minimum ?? fallback.minimum ?? 0);
+        const max = Number(spec.maximum ?? fallback.maximum ?? (key === "max_tokens" ? 32768 : 100));
+        const step = Number(spec.multipleOf ?? fallback.multipleOf ?? (spec.type === "integer" ? 1 : 0.1));
+        const initial = Number(values[key] ?? spec.default ?? fallback.default ?? min);
+        const number = top.createEl("input");
+        number.type = "number"; number.min = String(min); number.max = String(max); number.step = String(step); number.value = String(initial);
+        number.addEventListener("change", () => save(key, Math.max(min, Math.min(max, Number(number.value)))));
+        if (Number.isFinite(max) && max - min <= 100000) {
+          const range = row.createEl("input");
+          range.type = "range"; range.min = String(min); range.max = String(max); range.step = String(step); range.value = String(initial);
+          range.addEventListener("input", () => { number.value = range.value; });
+          range.addEventListener("change", () => save(key, Number(range.value)));
+          number.addEventListener("input", () => { range.value = number.value; });
+        }
+      }
+      rendered++;
+    }
 
-    const full = document.createElement("button");
-    full.addClass("agenter-model-full-settings");
-    full.textContent = "Open full model settings";
-    full.addEventListener("click", () => {
+    if (!rendered) pop.createDiv({ cls: "agenter-model-empty", text: "This model does not expose adjustable inference parameters." });
+    const actions = pop.createDiv({ cls: "agenter-model-actions" });
+    const reset = actions.createEl("button", { text: "Reset for this model" });
+    reset.addEventListener("click", async () => {
+      delete this.plugin.settings.modelOptions[modelKey];
+      await this.plugin.saveSettings();
       pop.remove();
-      (this.plugin as any).app.setting.open();
-      (this.plugin as any).app.setting.openTabById("agenter");
+      void this.openModelMenu(anchor);
     });
-    pop.appendChild(full);
-    document.body.appendChild(pop);
+    place();
 
-    const rect = anchor.getBoundingClientRect();
-    const width = 320;
-    const left = Math.max(10, Math.min(rect.left, window.innerWidth - width - 10));
-    pop.setCssStyles({ left: `${left}px` });
-    const estimatedHeight = 250;
-    const below = rect.bottom + 7;
-    pop.setCssStyles({ top: `${below + estimatedHeight > window.innerHeight ? Math.max(10, rect.top - estimatedHeight - 7) : below}px` });
-
-    const close = (e: MouseEvent) => {
-      if (!pop.contains(e.target as Node) && !anchor.contains(e.target as Node)) {
+    const close = (event: MouseEvent) => {
+      if (!pop.contains(event.target as Node) && !anchor.contains(event.target as Node)) {
         pop.remove();
         document.removeEventListener("mousedown", close, true);
       }
@@ -803,6 +857,48 @@ export class FloatingChatPanel {
     this.inputEl.focus();
   }
 
+  private async pickMediaAttachment() {
+    const picker = document.createElement("input");
+    picker.type = "file";
+    picker.accept = "image/*,audio/*,.wav,.mp3,.m4a,.ogg,.webm,.flac";
+    picker.multiple = false;
+    picker.addEventListener("change", async () => {
+      const file = picker.files?.[0];
+      if (!file) return;
+      if (file.size > 20 * 1024 * 1024) {
+        new Notice("Attachments must be 20 MB or smaller.");
+        return;
+      }
+      const type: MessagePart["type"] = file.type.startsWith("image/") ? "image" : "audio";
+      const data = Buffer.from(await file.arrayBuffer()).toString("base64");
+      this.pendingParts = [{ type, data, mimeType: file.type || (type === "image" ? "image/png" : "audio/mpeg"), name: file.name }];
+      this.renderPendingAttachments();
+      this.inputEl.focus();
+    });
+    picker.click();
+  }
+
+  private renderPendingAttachments() {
+    this.attachmentStripEl.empty();
+    if (!this.pendingParts.length) {
+      this.attachmentStripEl.setCssStyles({ display: "none" });
+      return;
+    }
+    this.attachmentStripEl.setCssStyles({ display: "flex" });
+    for (const part of this.pendingParts) {
+      const chip = this.attachmentStripEl.createDiv({ cls: "agenter-attachment-chip" });
+      const icon = chip.createSpan({ cls: "agenter-attachment-icon" });
+      safeIcon(icon, part.type === "image" ? "image" : "audio-lines");
+      chip.createSpan({ text: part.name ?? (part.type === "image" ? "Image" : "Audio") });
+      const remove = chip.createEl("button", { attr: { "aria-label": "Remove attachment", type: "button" } });
+      safeIcon(remove, "x");
+      remove.addEventListener("click", () => {
+        this.pendingParts = [];
+        this.renderPendingAttachments();
+      });
+    }
+  }
+
   private autoGrow() {
     const el = this.inputEl;
     el.setCssStyles({ height: "auto" });
@@ -810,9 +906,22 @@ export class FloatingChatPanel {
   }
 
   // ----------------------------------------------------- provider menu
-  private refreshProviderLabel() {
+  refreshProviderLabel() {
     const p = getActiveProvider(this.plugin.settings);
     this.providerBtn.setText(p ? `${p.name}` : "no provider");
+    if (!this.modelSettingsBtn || !p) return;
+    const metadata = this.plugin.settings.modelCatalogs?.[p.id]?.models.find((model) => model.id === p.model);
+    const task = String(metadata?.task ?? p.cloudflareModelTask ?? "").toLowerCase();
+    const id = p.model.toLowerCase();
+    const icon = task.includes("image") || /flux|phoenix|stable-diffusion|sdxl|vision/.test(id)
+      ? "image"
+      : task.includes("speech") || task.includes("audio") || /whisper|melotts|aura-/.test(id)
+        ? "audio-lines"
+        : task.includes("embedding") || /embedding|bge-/.test(id)
+          ? "braces"
+          : "sliders-horizontal";
+    safeIcon(this.modelSettingsBtn, icon);
+    this.modelSettingsBtn.title = task ? `${task} settings` : "Settings supported by this model";
   }
 
   private openProviderMenu(anchor: HTMLElement) {
@@ -848,6 +957,10 @@ export class FloatingChatPanel {
                 .setChecked(m === p.model)
                 .onClick(async () => {
                   p.model = m;
+                  if (p.type === "cloudflare") {
+                    const metadata = this.plugin.settings.modelCatalogs?.[p.id]?.models.find((model) => model.id === m);
+                    p.cloudflareModelTask = metadata?.task ?? String((metadata?.raw as any)?.task?.name ?? (metadata?.raw as any)?.task ?? "");
+                  }
                   if (this.plugin.settings.activeProviderId === p.id) {
                     this.refreshProviderLabel();
                     this.appendSystem(`Model set to **${m}**`);
@@ -1051,18 +1164,21 @@ export class FloatingChatPanel {
     safeIcon(avatar, "bot");
     wrap.appendChild(avatar);
     const bubble = document.createElement("div");
-    bubble.addClass("agenter-bubble");
-    const label = document.createElement("span");
-    label.addClass("agenter-typing-label");
-    label.textContent = "Thinking";
-    bubble.appendChild(label);
-    const typing = document.createElement("div");
-    typing.addClass("agenter-typing");
-    typing.empty();
-    typing.createSpan();
-    typing.createSpan();
-    typing.createSpan();
-    bubble.appendChild(typing);
+    bubble.addClass("agenter-bubble", "agenter-thinking-shell");
+    const head = bubble.createDiv({ cls: "agenter-typing-head" });
+    const visual = head.createSpan({ cls: "agenter-typing-visual" });
+    safeIcon(visual, "brain-circuit");
+    const label = head.createSpan({ cls: "agenter-typing-label", text: "Thinking" });
+    const typing = head.createDiv({ cls: "agenter-typing" });
+    typing.createSpan(); typing.createSpan(); typing.createSpan();
+    const chevron = head.createSpan({ cls: "agenter-typing-chevron" });
+    safeIcon(chevron, "chevron-up");
+    const reasoning = bubble.createEl("pre", { cls: "agenter-typing-reasoning" });
+    head.addEventListener("click", () => {
+      if (!wrap.hasClass("has-reasoning")) return;
+      wrap.toggleClass("is-reasoning-collapsed");
+      safeIcon(chevron, wrap.hasClass("is-reasoning-collapsed") ? "chevron-down" : "chevron-up");
+    });
     wrap.appendChild(bubble);
     this.messagesEl.appendChild(wrap);
     this.trackScrollElement(wrap);
@@ -1429,9 +1545,14 @@ The current chat will not restart.`;
   // --------------------------------------------------------------- send
   private async send() {
     if (this.busy) return;
+    try { await this.plugin.ensureCloudflareAccessToken(); } catch (error: any) { new Notice(error?.message ?? String(error)); return; }
     const text = this.inputEl.value.trim();
-    if (!text) return;
+    const parts = [...this.pendingParts];
+    if (!text && !parts.length) return;
+    const effectiveText = text || (parts[0]?.type === "image" ? "Describe this image in detail." : "Transcribe this audio.");
     this.inputEl.value = "";
+    this.pendingParts = [];
+    this.renderPendingAttachments();
     this.autoGrow();
 
     // Drop the welcome message on first real turn.
@@ -1439,8 +1560,11 @@ The current chat will not restart.`;
     if (!this.messages.length && welcome) this.messagesEl.empty();
 
     this.autoFollow = true;
-    this.appendMessage("user", text);
-    this.messages.push({ role: "user", content: text });
+    const attachmentLabel = parts.length ? `
+
+📎 ${parts.map((part) => part.name ?? part.type).join(", ")}` : "";
+    this.appendMessage("user", `${effectiveText}${attachmentLabel}`);
+    this.messages.push({ role: "user", content: effectiveText, parts });
 
     this.busy = true;
     this.aborted = false;
@@ -1451,7 +1575,7 @@ The current chat will not restart.`;
 
     const accessScope = this.buildAccessScope();
     const contextNote = this.buildContextNote(accessScope);
-    const prompt = contextNote ? `${contextNote}\n\n${text}` : text;
+    const prompt = contextNote ? `${contextNote}\n\n${effectiveText}` : effectiveText;
 
     this.orchestrator.setAccessScope(accessScope);
     this.orchestrator.setMessages(this.messages.slice(0, -1));
@@ -1464,15 +1588,44 @@ The current chat will not restart.`;
     let pendingTool: string | null = null;
     let pendingToolArgs: any = {};
     let activeToolLine: HTMLElement | null = null;
+    let reasoningText = "";
+    let reasoningStartedAt = 0;
+    const reasoningBody = typing.querySelector(".agenter-typing-reasoning") as HTMLElement | null;
+    const reasoningLabel = typing.querySelector(".agenter-typing-label") as HTMLElement | null;
+    const reasoningDots = typing.querySelector(".agenter-typing") as HTMLElement | null;
+    const reasoningChevron = typing.querySelector(".agenter-typing-chevron") as HTMLElement | null;
+    const finishReasoning = () => {
+      if (!reasoningText) return;
+      typing.removeClass("is-reasoning-live");
+      typing.addClass("has-reasoning", "is-reasoning-complete", "is-reasoning-collapsed");
+      const elapsed = reasoningStartedAt ? Math.max(0.1, (Date.now() - reasoningStartedAt) / 1000) : 0;
+      if (reasoningLabel) reasoningLabel.textContent = elapsed ? `Thought for ${elapsed.toFixed(elapsed < 10 ? 1 : 0)}s` : "Reasoning complete";
+      if (reasoningDots) reasoningDots.setCssStyles({ display: "none" });
+      if (reasoningChevron) safeIcon(reasoningChevron, "chevron-down");
+    };
+    const appendReasoning = (token: string) => {
+      if (!reasoningStartedAt) reasoningStartedAt = Date.now();
+      typing.addClass("has-reasoning", "is-reasoning-live");
+      typing.removeClass("is-reasoning-collapsed", "is-reasoning-complete");
+      reasoningText += token;
+      if (reasoningBody) reasoningBody.textContent = reasoningText;
+      if (reasoningLabel) reasoningLabel.textContent = "Thinking";
+      if (reasoningChevron) safeIcon(reasoningChevron, "chevron-up");
+      this.advanceActivity("reasoning", "Thinking", "Live reasoning");
+      this.setStatus("thinking", "Thinking");
+      this.scrollToBottom();
+    };
 
     const cb: ChatCallbacks = {
+      onReasoningToken: (t) => appendReasoning(t),
       onAssistantToken: (t) => {
+        finishReasoning();
         if (this.aborted) return;
         if (activeToolLine && !activeToolLine.hasClass("is-running")) {
           this.collapseToolLine(activeToolLine);
           activeToolLine = null;
         }
-        if (typing.parentNode) typing.remove();
+        if (typing.parentNode && !reasoningText) typing.remove();
         if (!this.streamEl) {
           this.streamEl = this.appendMessage("assistant", "");
           this.streamBuf = "";
@@ -1524,28 +1677,30 @@ The current chat will not restart.`;
         return this.requestApproval(call);
       },
       onError: (err) => {
+        finishReasoning();
         this.collapseToolLine(activeToolLine);
         activeToolLine = null;
-        if (typing.parentNode) typing.remove();
+        if (typing.parentNode && !reasoningText) typing.remove();
         this.hadError = true;
         this.advanceActivity("error", "The run encountered an error", err);
         this.setStatus("error", "Request failed");
         this.appendSystem(`**Error:** ${err}`);
       },
       onDone: () => {
+        finishReasoning();
         this.collapseToolLine(activeToolLine);
         activeToolLine = null;
         this.flushStreamRender();
         this.sendBtn.disabled = false;
         this.toggleStop(false);
-        if (typing.parentNode) typing.remove();
+        if (typing.parentNode && !reasoningText) typing.remove();
         this.syncMessages();
         this.finishActivity();
         void this.persist();
       },
     };
 
-    await this.orchestrator.run(prompt, cb);
+    await this.orchestrator.run(prompt, cb, parts);
     if (!this.aborted && this.orchestrator.messages.length) {
       this.messages = this.orchestrator.messages;
     }
@@ -1762,6 +1917,13 @@ function safeIcon(el: HTMLElement, icon: string, fallback = "•") {
     info: '<circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7h.01"/>',
     "external-link": '<path d="M14 4h6v6M10 14L20 4"/><path d="M20 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1h5"/>',
     settings: '<circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M4.2 4.2l2.1 2.1M17.7 17.7l2.1 2.1M2 12h3M19 12h3M4.2 19.8l2.1-2.1M17.7 6.3l2.1-2.1"/>',
+    "sliders-horizontal": '<path d="M4 6h6M14 6h6M4 12h10M18 12h2M4 18h2M10 18h10"/><circle cx="12" cy="6" r="2"/><circle cx="16" cy="12" r="2"/><circle cx="8" cy="18" r="2"/>',
+    paperclip: '<path d="M21 11.5l-8.5 8.5a6 6 0 0 1-8.5-8.5l9-9a4 4 0 0 1 5.7 5.7l-9 9a2 2 0 0 1-2.9-2.8l8.4-8.4"/>',
+    "wand-sparkles": '<path d="M15 4V2M15 10V8M12 6h-2M20 6h-2M5 21l11-11 3 3L8 24zM4 4l1 2 2 1-2 1-1 2-1-2-2-1 2-1z"/>',
+    "text-quote": '<path d="M5 6h14M5 10h10M5 14h8"/><path d="M15 17h2l-1 3M19 17h2l-1 3"/>',
+    "audio-lines": '<path d="M4 10v4M8 7v10M12 4v16M16 8v8M20 10v4"/>',
+    braces: '<path d="M9 3H7a2 2 0 0 0-2 2v4a2 2 0 0 1-2 2 2 2 0 0 1 2 2v4a2 2 0 0 0 2 2h2M15 3h2a2 2 0 0 1 2 2v4a2 2 0 0 0 2 2 2 2 0 0 0-2 2v4a2 2 0 0 1-2 2h-2"/>',
+    "brain-circuit": '<path d="M9 4a3 3 0 0 0-3 3v1a3 3 0 0 0-2 5 3 3 0 0 0 3 4h2M15 4a3 3 0 0 1 3 3v1a3 3 0 0 1 2 5 3 3 0 0 1-3 4h-2M9 4v16M15 4v16M9 9h3l2-2M15 14h-3l-2 2"/><circle cx="14" cy="7" r="1"/><circle cx="10" cy="16" r="1"/>',
     database: '<ellipse cx="12" cy="5" rx="7" ry="3"/><path d="M5 5v6c0 1.7 3.1 3 7 3s7-1.3 7-3V5"/><path d="M5 11v6c0 1.7 3.1 3 7 3s7-1.3 7-3v-6"/>',
     "maximize-2": '<path d="M8 3H3v5M16 3h5v5M8 21H3v-5M21 16v5h-5"/>',
     "panel-right": '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M15 4v16"/>',

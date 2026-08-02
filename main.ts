@@ -8,6 +8,8 @@ import {
 } from "./src/settings";
 import { FloatingChatPanel } from "./src/ui";
 import { AgentOrchestrator, ChatCallbacks } from "./src/orchestrator";
+import { fetchCloudflareModels, cacheExpiry } from "./src/cloudflare";
+import { connectCloudflareOAuth, listCloudflareAccounts, refreshCloudflareOAuth, revokeCloudflareOAuth } from "./src/cloudflare-oauth";
 
 export const AGENTER_VIEW_TYPE = "agenter-chat-view";
 
@@ -152,6 +154,8 @@ export default class AgenterPlugin extends Plugin {
     });
 
     this.addSettingTab(new AgentSettingTab(this.app, this));
+
+    if (this.settings.cloudflareAutoSync) void this.syncCloudflareCatalogs(false);
   }
 
   onunload() {
@@ -171,6 +175,126 @@ export default class AgenterPlugin extends Plugin {
     }
 
     await this.openDockedChat();
+  }
+
+  async ensureCloudflareAccessToken(providerId?: string) {
+    const provider = providerId
+      ? this.settings.providers.find((p) => p.id === providerId)
+      : this.settings.providers.find((p) => p.id === this.settings.activeProviderId);
+    if (!provider || provider.type !== "cloudflare" || provider.cloudflareAuthMode !== "oauth") return;
+    const expiresAt = provider.cloudflareOAuthExpiresAt ?? 0;
+    if (expiresAt > Date.now() + 60_000) return;
+    if (!provider.cloudflareOAuthRefreshToken) throw new Error("Cloudflare authorization expired. Connect Cloudflare again.");
+    const tokens = await refreshCloudflareOAuth(this.settings.cloudflareOAuthClientId, provider.cloudflareOAuthRefreshToken);
+    provider.apiKey = tokens.accessToken;
+    provider.cloudflareOAuthRefreshToken = tokens.refreshToken ?? provider.cloudflareOAuthRefreshToken;
+    provider.cloudflareOAuthExpiresAt = tokens.expiresAt;
+    provider.cloudflareOAuthScope = tokens.scope;
+    await this.saveSettings();
+  }
+
+  async connectCloudflareToken(providerId: string, accountId: string, token: string): Promise<number> {
+    const provider = this.settings.providers.find((p) => p.id === providerId);
+    if (!provider || provider.type !== "cloudflare") throw new Error("Cloudflare provider was not found.");
+    const candidate = { ...provider, cloudflareAccountId: accountId.trim(), apiKey: token.trim(), cloudflareAuthMode: "token" as const };
+    const models = await fetchCloudflareModels(candidate);
+    if (!models.length) throw new Error("Cloudflare connected but returned no Workers AI models.");
+    provider.cloudflareAccountId = accountId.trim();
+    provider.apiKey = token.trim();
+    provider.cloudflareAuthMode = "token";
+    provider.cloudflareOAuthRefreshToken = "";
+    provider.cloudflareOAuthExpiresAt = undefined;
+    provider.cloudflareOAuthScope = "";
+    provider.connectionStatus = "connected";
+    provider.lastConnectionTestAt = Date.now();
+    provider.lastConnectionError = "";
+    this.settings.modelCatalogs[provider.id] = {
+      providerId: provider.id,
+      providerType: provider.type,
+      syncedAt: Date.now(),
+      expiresAt: cacheExpiry(),
+      models,
+    };
+    if (!models.some((model) => model.id === provider.model)) provider.model = models[0].id;
+    const selectedModel = models.find((model) => model.id === provider.model);
+    provider.cloudflareModelTask = selectedModel?.task ?? String((selectedModel?.raw as any)?.task?.name ?? (selectedModel?.raw as any)?.task ?? "");
+    await this.saveSettings();
+    this.activeChatPanel?.refreshProviderLabel();
+    return models.length;
+  }
+
+  async connectCloudflare(providerId: string) {
+    const provider = this.settings.providers.find((p) => p.id === providerId);
+    if (!provider || provider.type !== "cloudflare") throw new Error("Cloudflare provider was not found.");
+    const tokens = await connectCloudflareOAuth(this.settings.cloudflareOAuthClientId);
+    if (tokens.scope !== undefined && !tokens.scope.trim()) {
+      try { await revokeCloudflareOAuth(this.settings.cloudflareOAuthClientId, tokens.accessToken); } catch { /* best effort */ }
+      throw new Error("Cloudflare returned a token with zero permissions. Add Account Settings Read, Workers AI Read, and Workers AI Edit to the OAuth client, then reconnect.");
+    }
+    const accounts = await listCloudflareAccounts(tokens.accessToken);
+    if (!accounts.length) throw new Error("Cloudflare returned no accessible account. Add Account Settings Read to the OAuth client and reconnect.");
+    provider.apiKey = tokens.accessToken;
+    provider.cloudflareOAuthRefreshToken = tokens.refreshToken;
+    provider.cloudflareOAuthExpiresAt = tokens.expiresAt;
+    provider.cloudflareOAuthScope = tokens.scope;
+    provider.cloudflareAuthMode = "oauth";
+    provider.cloudflareAccounts = accounts;
+    provider.cloudflareAccountId = accounts[0].id;
+    provider.cloudflareAccountName = accounts[0].name;
+    provider.connectionStatus = "connected";
+    provider.lastConnectionTestAt = Date.now();
+    provider.lastConnectionError = "";
+    await this.saveSettings();
+    await this.syncCloudflareCatalogs(false);
+    new Notice(`Cloudflare connected: ${accounts[0].name}`);
+  }
+
+  async disconnectCloudflare(providerId: string) {
+    const provider = this.settings.providers.find((p) => p.id === providerId);
+    if (!provider || provider.type !== "cloudflare") return;
+    if (provider.apiKey && provider.cloudflareAuthMode === "oauth") {
+      try { await revokeCloudflareOAuth(this.settings.cloudflareOAuthClientId, provider.apiKey); } catch { /* local disconnect still succeeds */ }
+    }
+    provider.apiKey = "";
+    provider.cloudflareOAuthRefreshToken = "";
+    provider.cloudflareOAuthExpiresAt = undefined;
+    provider.cloudflareOAuthScope = "";
+    provider.cloudflareAuthMode = "token";
+    provider.connectionStatus = "unknown";
+    provider.cloudflareAccountName = "";
+    provider.cloudflareAccounts = [];
+    await this.saveSettings();
+  }
+
+  async syncCloudflareCatalogs(showNotice = true) {
+    const providers = this.settings.providers.filter((p) => p.type === "cloudflare");
+    for (const provider of providers) {
+      try {
+        await this.ensureCloudflareAccessToken(provider.id);
+        const models = await fetchCloudflareModels(provider);
+        this.settings.modelCatalogs[provider.id] = {
+          providerId: provider.id,
+          providerType: provider.type,
+          syncedAt: Date.now(),
+          expiresAt: cacheExpiry(),
+          models,
+        };
+        provider.connectionStatus = "connected";
+        provider.lastConnectionTestAt = Date.now();
+        provider.lastConnectionError = "";
+        if (models.length && !models.some((m) => m.id === provider.model)) provider.model = models[0].id;
+      } catch (e: any) {
+        provider.connectionStatus = "error";
+        provider.lastConnectionError = e?.message ?? String(e);
+        this.settings.modelCatalogs[provider.id] = {
+          providerId: provider.id, providerType: provider.type, syncedAt: Date.now(), expiresAt: Date.now() + 60 * 60 * 1000, models: this.settings.modelCatalogs[provider.id]?.models ?? [], error: provider.lastConnectionError,
+        };
+        if (showNotice) new Notice(`Cloudflare sync failed: ${provider.lastConnectionError}`);
+      }
+    }
+    await this.saveSettings();
+    if (showNotice) new Notice("Cloudflare model catalog synced.");
+    this.activeChatPanel?.refreshProviderLabel();
   }
 
   async openDockedChat() {
@@ -315,7 +439,8 @@ export default class AgenterPlugin extends Plugin {
     const previewTop = document.createElement("button");
     previewTop.addClass("agenter-selection-preview-top");
     const contextLabel = document.createElement("span");
-    contextLabel.textContent = `Selection · ${selection.split("\n").length} lines`;
+    const wordCount = selection.trim().split(/\s+/).filter(Boolean).length;
+    contextLabel.textContent = `${wordCount} words · ${selection.split("\n").length} lines`;
     const expandLabel = document.createElement("span");
     expandLabel.textContent = "Show full";
     previewTop.append(contextLabel, expandLabel);
@@ -339,7 +464,7 @@ export default class AgenterPlugin extends Plugin {
     const actionRow = document.createElement("div");
     actionRow.addClass("agenter-selection-primary-actions");
     const insert = document.createElement("button");
-    insert.textContent = "Insert in chat";
+    insert.textContent = "Send to main chat";
     insert.addEventListener("click", async () => {
       popover.remove();
       await this.ensureChatOpen();
@@ -347,7 +472,7 @@ export default class AgenterPlugin extends Plugin {
     });
     const chatHere = document.createElement("button");
     chatHere.addClass("is-primary");
-    chatHere.textContent = "Chat here";
+    chatHere.textContent = "Ask here";
     actionRow.append(insert, chatHere);
     popover.appendChild(actionRow);
 
@@ -505,8 +630,21 @@ export default class AgenterPlugin extends Plugin {
         renderMd(response, responseEl);
         chatLog.scrollTop = chatLog.scrollHeight;
       };
+      let reasoningEl: HTMLElement | null = null;
+      let reasoningText = "";
       const callbacks: ChatCallbacks = {
+        onReasoningToken: (token) => {
+          if (typing.parentNode) typing.remove();
+          if (!reasoningEl) {
+            reasoningEl = appendBubble("status", "");
+            reasoningEl.addClass("is-reasoning");
+          }
+          reasoningText += token;
+          reasoningEl.textContent = `Thinking · ${reasoningText}`;
+          chatLog.scrollTop = chatLog.scrollHeight;
+        },
         onAssistantToken: (token) => {
+          reasoningEl?.addClass("is-complete");
           if (typing.parentNode) typing.remove();
           if (!responseEl) responseEl = appendBubble("assistant", "");
           response += token;
@@ -547,7 +685,23 @@ export default class AgenterPlugin extends Plugin {
       await orchestrator.run(prompt, callbacks);
     };
 
-    Object.entries(prompts).slice(0, 6).forEach(([key, template]) => {
+    const quickActions = [
+      ["Summarize", "Summarize this selection clearly in concise bullet points."],
+      ["Explain", "Explain this selection simply, preserving important details."],
+      ["Rewrite", "Rewrite this selection to be clearer and more polished."],
+      ["Translate", "Translate this selection. Infer the most useful target language from the current text and conversation."],
+      ["Fix writing", "Fix grammar, spelling, punctuation, and readability without changing the meaning."],
+      ["Make tasks", "Convert this selection into a practical Markdown checklist."],
+    ] as const;
+    for (const [label, instruction] of quickActions) {
+      const button = document.createElement("button");
+      button.addClass("agenter-selection-action", "is-quick");
+      button.textContent = label;
+      button.addEventListener("click", () => void runInline(instruction));
+      list.appendChild(button);
+    }
+
+    Object.entries(prompts).slice(0, 4).forEach(([key, template]) => {
       const btn = document.createElement("button");
       btn.addClass("agenter-selection-action");
       btn.textContent = key.replace(/[-_]/g, " ");

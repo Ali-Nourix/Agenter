@@ -131,3 +131,65 @@ If you discover a security issue, do not include private vault content, API keys
 ## License
 
 Agenter is released under the [MIT License](LICENSE).
+
+## Cloudflare Workers AI native provider
+
+Agenter now includes a first-class Cloudflare Workers AI provider.
+
+### Setup
+
+1. Open **Settings → Agenter → Providers**.
+2. Select **Cloudflare Workers AI** or add a new Cloudflare provider.
+3. Enter your **Cloudflare Account ID** and **API Token**.
+4. Click **Sync catalog** or **Fetch models**.
+5. Pick any available Workers AI model from the live Cloudflare catalog.
+
+No manual model endpoint is required. The plugin builds the Workers AI run URL from your Account ID and selected model.
+
+### Cloudflare features
+
+- Live model discovery from Cloudflare.
+- Offline model catalog cache with sync timestamp.
+- Capability inference for vision, audio, image generation, embeddings, reasoning, JSON, tool calling, streaming, free/paid, latency, experimental, and deprecated status.
+- Human-readable errors for invalid credentials, rate limits, unavailable models, timeouts, and Cloudflare outages.
+- Native streaming through the existing Agenter streaming pipeline.
+- Tool/function calling routed through the existing approval and execution system.
+
+### Provider architecture
+
+Providers implement a common adapter contract in `src/api.ts`. Shared model and multimodal message types live in `src/provider-types.ts`, and Cloudflare-specific authentication, discovery, and capability inference live in `src/cloudflare.ts`.
+
+### One-click Cloudflare OAuth
+
+The settings screen includes **Connect Cloudflare**. It opens Cloudflare in the default browser, shows Cloudflare's consent screen, returns to Agenter through a localhost PKCE callback, discovers available accounts, and synchronizes Workers AI models. Access tokens refresh automatically and **Disconnect** revokes the authorization.
+
+Plugin publishers must register one public Cloudflare OAuth client before distribution:
+
+- Flow: Authorization Code with PKCE S256
+- Token authentication: `none` (public desktop client; do not bundle a client secret)
+- Redirect URL: `http://127.0.0.1:42813/cloudflare/callback`
+- Permissions: Workers AI Read and Account Settings Read
+
+Paste the resulting Client ID into the one-time publisher field. End users then only need to press **Connect Cloudflare**.
+
+### Official Workers AI setup
+
+Agenter's default Cloudflare setup follows the Workers AI REST API documentation:
+
+1. Click **Set up Workers AI**.
+2. Open Cloudflare Workers AI and choose **Use REST API**.
+3. Create the preconfigured Workers AI API token.
+4. Paste the Account ID and token into Agenter.
+5. Agenter verifies credentials and downloads the live model catalog before saving.
+
+Inference is sent directly to `POST /accounts/{account_id}/ai/run/{model}`. Workers AI includes 10,000 Neurons per day at no charge on both Free and Paid Workers plans; Free-plan requests stop after the daily allocation is exhausted.
+
+### Workers AI multimodal routing
+
+Agenter routes requests according to the selected Workers AI model:
+
+- Text generation: `POST /accounts/{account_id}/ai/v1/chat/completions`
+- Model-specific tasks: `POST /accounts/{account_id}/ai/run/@cf/{author}/{model}`
+- Live input/output schema: `GET /accounts/{account_id}/ai/models/schema?model=@cf/{author}/{model}`
+
+Use the paperclip button in chat to attach an image or audio file. Vision and transcription models receive the attachment in their documented model-specific payload. Image-generation and text-to-speech results render directly in the conversation.

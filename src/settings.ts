@@ -2,7 +2,7 @@ import { App, PluginSettingTab, Setting, Notice, Modal } from "obsidian";
 import AgenterPlugin from "../main";
 import { probeModels } from "./api";
 
-export type ProviderType = "openai-compatible" | "openai" | "anthropic" | "gemini" | "custom";
+import { ProviderType, ModelCatalogCache, ModelMetadata } from "./provider-types";
 
 export interface ProviderConfig {
   /** Unique id */
@@ -23,6 +23,17 @@ export interface ProviderConfig {
   supportsWebSearch: boolean;
   /** Whether the provider supports vision (image input) */
   supportsVision: boolean;
+  cloudflareAccountId?: string;
+  connectionStatus?: "unknown" | "connected" | "error";
+  lastConnectionTestAt?: number;
+  lastConnectionError?: string;
+  cloudflareAuthMode?: "token" | "oauth";
+  cloudflareOAuthRefreshToken?: string;
+  cloudflareOAuthExpiresAt?: number;
+  cloudflareOAuthScope?: string;
+  cloudflareAccountName?: string;
+  cloudflareAccounts?: Array<{ id: string; name: string }>;
+  cloudflareModelTask?: string;
 }
 
 export interface StoredMessage {
@@ -81,6 +92,16 @@ export interface AgentSettings {
    * action card ("Append to note?") with Approve / Reject buttons.
    */
   toolApproval: Record<string, boolean>;
+  modelCatalogs: Record<string, ModelCatalogCache>;
+  favoriteModels: string[];
+  pinnedModels: string[];
+  recentModels: string[];
+  cloudflareAutoSync: boolean;
+  cloudflareCacheTtlHours: number;
+  cloudflareDeveloperMode: boolean;
+  cloudflareJsonMode: boolean;
+  cloudflareOAuthClientId: string;
+  modelOptions: Record<string, Record<string, string | number | boolean>>;
 }
 
 export const DEFAULT_SETTINGS: AgentSettings = {
@@ -117,6 +138,41 @@ export const DEFAULT_SETTINGS: AgentSettings = {
       extraHeaders: "",
       supportsWebSearch: true,
       supportsVision: true,
+    },
+    {
+      id: "openrouter-default",
+      name: "OpenRouter",
+      type: "openrouter",
+      baseUrl: "https://openrouter.ai/api/v1",
+      apiKey: "",
+      model: "openai/gpt-4o-mini",
+      extraHeaders: "",
+      supportsWebSearch: false,
+      supportsVision: true,
+    },
+    {
+      id: "ollama-default",
+      name: "Ollama",
+      type: "ollama",
+      baseUrl: "http://localhost:11434/v1",
+      apiKey: "ollama",
+      model: "llama3.1",
+      extraHeaders: "",
+      supportsWebSearch: false,
+      supportsVision: false,
+    },
+    {
+      id: "cloudflare-default",
+      name: "Cloudflare Workers AI",
+      type: "cloudflare",
+      baseUrl: "",
+      apiKey: "",
+      model: "@cf/meta/llama-3.1-8b-instruct",
+      extraHeaders: "",
+      supportsWebSearch: false,
+      supportsVision: true,
+      cloudflareAccountId: "",
+      connectionStatus: "unknown",
     },
     {
       id: "openai-compatible-default",
@@ -159,6 +215,16 @@ export const DEFAULT_SETTINGS: AgentSettings = {
     rewrite: "Rewrite the selected text to be clearer, concise, and natural while preserving meaning.",
     extract: "Extract tasks, dates, names, decisions, and open questions from the selected text.",
   },
+  modelCatalogs: {},
+  favoriteModels: [],
+  pinnedModels: [],
+  recentModels: [],
+  cloudflareAutoSync: true,
+  cloudflareCacheTtlHours: 12,
+  cloudflareDeveloperMode: false,
+  cloudflareJsonMode: false,
+  cloudflareOAuthClientId: "",
+  modelOptions: {},
   toolApproval: {
     write_note: true,
     edit_note: true,
@@ -221,6 +287,7 @@ export function getActiveSession(settings: AgentSettings): ChatSession {
 
 export class AgentSettingTab extends PluginSettingTab {
   plugin: AgenterPlugin;
+  private activeSection: "providers" | "chat" | "tools" | "advanced" = "providers";
 
   constructor(app: App, plugin: AgenterPlugin) {
     super(app, plugin);
@@ -230,11 +297,62 @@ export class AgentSettingTab extends PluginSettingTab {
   display(): void {
     const { containerEl } = this;
     containerEl.empty();
+    containerEl.addClass("agenter-settings-shell");
+
+    const active = getActiveProvider(this.plugin.settings);
+    const cloudflare = this.plugin.settings.providers.find((p) => p.type === "cloudflare");
+    const hero = containerEl.createDiv({ cls: "agenter-settings-hero" });
+    const heroText = hero.createDiv({ cls: "agenter-settings-hero-copy" });
+    heroText.createEl("h1", { text: "Agenter" });
+    heroText.createEl("p", { text: "Settings" });
+    const heroStatus = hero.createDiv({ cls: "agenter-settings-hero-status" });
+    heroStatus.createEl("span", { cls: `agenter-status-dot ${active?.apiKey ? "is-online" : ""}` });
+    const statusCopy = heroStatus.createDiv();
+    statusCopy.createEl("strong", { text: active?.name ?? "No provider" });
+    statusCopy.createEl("small", { text: active?.model ?? "Choose a provider to begin" });
+
+    const nav = containerEl.createDiv({ cls: "agenter-settings-nav", attr: { role: "tablist", "aria-label": "Agenter settings" } });
+    const content = containerEl.createDiv({ cls: "agenter-settings-content" });
+    const panes = {
+      providers: content.createDiv({ cls: "agenter-settings-pane" }),
+      chat: content.createDiv({ cls: "agenter-settings-pane" }),
+      tools: content.createDiv({ cls: "agenter-settings-pane" }),
+      advanced: content.createDiv({ cls: "agenter-settings-pane" }),
+    };
+    const tabDefs = [
+      { id: "providers" as const, label: "Providers" },
+      { id: "chat" as const, label: "Chat" },
+      { id: "tools" as const, label: "Tools" },
+      { id: "advanced" as const, label: "Advanced" },
+    ];
+    const renderTabs = () => {
+      for (const def of tabDefs) {
+        const pane = panes[def.id];
+        pane.toggleClass("is-active", this.activeSection === def.id);
+      }
+      nav.querySelectorAll("button").forEach((button) => {
+        const selected = (button as HTMLElement).dataset.section === this.activeSection;
+        button.toggleClass("is-active", selected);
+        button.setAttribute("aria-selected", String(selected));
+      });
+    };
+    for (const def of tabDefs) {
+      const button = nav.createEl("button", { cls: "agenter-settings-tab", attr: { type: "button", role: "tab" } });
+      button.dataset.section = def.id;
+      button.createEl("span", { text: def.label });
+      button.addEventListener("click", () => { this.activeSection = def.id; renderTabs(); });
+    }
+    renderTabs();
+
+    const providersPane = panes.providers;
+    const chatPane = panes.chat;
+    const toolsPane = panes.tools;
+    const advancedPane = panes.advanced;
 
     // --- Providers ---
-    new Setting(containerEl).setName("Providers").setHeading();
+    new Setting(providersPane).setName("Providers").setHeading();
 
-    new Setting(containerEl)
+    new Setting(providersPane)
       .setName("Active provider")
       .setDesc("Select which provider/model to use for chat.")
       .addDropdown((dd) => {
@@ -249,8 +367,10 @@ export class AgentSettingTab extends PluginSettingTab {
         });
       });
 
-    this.plugin.settings.providers.forEach((provider) => {
-      const wrapper = containerEl.createDiv({ cls: "agenter-provider-block" });
+    this.plugin.settings.providers
+      .filter((provider) => provider.id === this.plugin.settings.activeProviderId)
+      .forEach((provider) => {
+      const wrapper = providersPane.createDiv({ cls: "agenter-provider-block" });
       wrapper.setCssStyles({
         border: "1px solid var(--background-modifier-border)",
         borderRadius: "8px",
@@ -259,7 +379,7 @@ export class AgentSettingTab extends PluginSettingTab {
       });
 
       new Setting(wrapper)
-        .setName(`Provider: ${provider.name}`)
+        .setName(provider.name)
         .setDesc(`Type: ${provider.type}`)
         .addButton((btn) =>
           btn.setButtonText("Remove").onClick(async () => {
@@ -298,6 +418,7 @@ export class AgentSettingTab extends PluginSettingTab {
           })
         );
 
+      if (provider.type !== "cloudflare") {
       new Setting(wrapper).setName("Display name").addText((t) =>
         t.setValue(provider.name).onChange(async (v) => {
           provider.name = v;
@@ -310,6 +431,9 @@ export class AgentSettingTab extends PluginSettingTab {
         dd.addOption("openai-compatible", "OpenAI-Compatible");
         dd.addOption("anthropic", "Anthropic");
         dd.addOption("gemini", "Gemini");
+        dd.addOption("openrouter", "OpenRouter");
+        dd.addOption("ollama", "Ollama");
+        dd.addOption("cloudflare", "Cloudflare Workers AI");
         dd.addOption("custom", "Custom");
         dd.setValue(provider.type);
         dd.onChange(async (v) => {
@@ -326,24 +450,92 @@ export class AgentSettingTab extends PluginSettingTab {
         })
       );
 
-      new Setting(wrapper).setName("API key").addText((t) => {
-        t.inputEl.type = "password";
-        t.setValue(provider.apiKey).onChange(async (v) => {
-          provider.apiKey = v;
-          await this.plugin.saveSettings();
+      }
+
+      if (provider.type !== "cloudflare") {
+        new Setting(wrapper).setName(provider.type === "cloudflare" ? "Manual API token (advanced fallback)" : "API key").addText((t) => {
+          t.inputEl.type = "password";
+          t.setValue(provider.apiKey).onChange(async (v) => {
+            provider.apiKey = v;
+            if (provider.type === "cloudflare") provider.cloudflareAuthMode = "token";
+            await this.plugin.saveSettings();
+          });
         });
-      });
+      }
+
+      if (provider.type === "cloudflare") {
+        const cloudflareConnected = !!provider.apiKey && !!provider.cloudflareAccountId && provider.connectionStatus === "connected";
+        const oauthConnected = provider.cloudflareAuthMode === "oauth" && cloudflareConnected;
+        const authCard = wrapper.createDiv({ cls: "agenter-cf-connect-card" });
+        authCard.createEl("div", { cls: "agenter-cf-connect-logo", text: "☁" });
+        const authCopy = authCard.createDiv({ cls: "agenter-cf-connect-copy" });
+        authCopy.createEl("strong", { text: cloudflareConnected ? "Workers AI connected" : "Set up Workers AI" });
+        authCopy.createEl("span", { text: cloudflareConnected
+          ? `${provider.cloudflareAccountName ?? provider.cloudflareAccountId} · ${provider.cloudflareAuthMode === "oauth" ? "OAuth" : "Official API token"}`
+          : "Use Cloudflare's official Workers AI REST API setup. Includes 10,000 free Neurons every day." });
+        const authButton = authCard.createEl("button", { text: cloudflareConnected ? "Disconnect" : "Set up" });
+        authButton.addClass(cloudflareConnected ? "is-disconnect" : "mod-cta");
+        authButton.addEventListener("click", async () => {
+          if (cloudflareConnected) {
+            authButton.disabled = true;
+            authButton.textContent = "Disconnecting…";
+            await this.plugin.disconnectCloudflare(provider.id);
+            this.display();
+            return;
+          }
+          new CloudflareWorkersSetupModal(this.app, this.plugin, provider, () => this.display()).open();
+        });
+
+        if (oauthConnected && (provider.cloudflareAccounts?.length ?? 0) > 1) {
+          new Setting(wrapper).setName("Cloudflare account").setDesc("Choose which authorized account Workers AI should use.").addDropdown((dd) => {
+            for (const account of provider.cloudflareAccounts ?? []) dd.addOption(account.id, account.name);
+            dd.setValue(provider.cloudflareAccountId ?? "");
+            dd.onChange(async (id) => {
+              provider.cloudflareAccountId = id;
+              provider.cloudflareAccountName = provider.cloudflareAccounts?.find((a) => a.id === id)?.name;
+              await this.plugin.saveSettings();
+              await this.plugin.syncCloudflareCatalogs(false);
+              this.display();
+            });
+          });
+        } else if (!oauthConnected && this.plugin.settings.cloudflareDeveloperMode) {
+          new Setting(wrapper).setName("Cloudflare Account ID").setDesc("Only needed for manual API-token mode. OAuth discovers this automatically.").addText((t) =>
+            t.setValue(provider.cloudflareAccountId ?? "").onChange(async (v) => {
+              provider.cloudflareAccountId = v.trim();
+              await this.plugin.saveSettings();
+            })
+          );
+        }
+        const cache = this.plugin.settings.modelCatalogs?.[provider.id];
+        const status = provider.connectionStatus === "connected" ? "✅ Connected" : provider.connectionStatus === "error" ? `❌ ${provider.lastConnectionError ?? "Error"}` : "Not tested";
+        new Setting(wrapper).setName("Connection status").setDesc(`${status}${cache?.syncedAt ? ` · Synced ${new Date(cache.syncedAt).toLocaleString()} · ${cache.models.length} models cached` : ""}`)
+          .addButton((btn) => btn.setButtonText("Sync catalog").onClick(async () => {
+            btn.setDisabled(true); btn.setButtonText("Syncing…");
+            await this.plugin.syncCloudflareCatalogs(true);
+            btn.setDisabled(false); this.display();
+          }));
+
+      }
 
       // --- Model: dropdown populated by "Fetch models" ---
       let modelDD: any;
       const modelSetting = new Setting(wrapper).setName("Model");
       modelSetting.addDropdown((dd) => {
         modelDD = dd;
-        // seed with the current value so it's never empty
-        dd.addOption(provider.model, provider.model);
+        const cachedModels = this.plugin.settings.modelCatalogs?.[provider.id]?.models ?? [];
+        if (provider.type === "cloudflare" && cachedModels.length) {
+          for (const model of cachedModels) dd.addOption(model.id, model.name || model.id);
+        } else {
+          dd.addOption(provider.model, provider.model);
+        }
+        if (!cachedModels.some((model) => model.id === provider.model)) dd.addOption(provider.model, provider.model);
         dd.setValue(provider.model);
         dd.onChange(async (v) => {
           provider.model = v;
+          if (provider.type === "cloudflare") {
+            const selected = cachedModels.find((model) => model.id === v);
+            provider.cloudflareModelTask = selected?.task ?? String((selected?.raw as any)?.task?.name ?? (selected?.raw as any)?.task ?? "");
+          }
           await this.plugin.saveSettings();
         });
       });
@@ -351,6 +543,11 @@ export class AgentSettingTab extends PluginSettingTab {
         btn.setButtonText("Fetch models").onClick(async () => {
           btn.setDisabled(true);
           btn.setButtonText("Fetching…");
+          if (provider.type === "cloudflare") {
+            await this.plugin.syncCloudflareCatalogs(true);
+            this.display();
+            return;
+          }
           const res = await probeModels(provider);
           btn.setDisabled(false);
           btn.setButtonText("Fetch models");
@@ -371,34 +568,23 @@ export class AgentSettingTab extends PluginSettingTab {
         })
       );
 
-      new Setting(wrapper)
-        .setName("Extra headers (JSON)")
-        .setDesc("Only for custom providers. e.g. {\"Authorization\":\"Bearer x\"}")
-        .addTextArea((t) => {
-          t.setValue(provider.extraHeaders);
-          t.inputEl.rows = 2;
-          t.onChange(async (v) => {
-            provider.extraHeaders = v;
+      if (provider.type !== "cloudflare") {
+        new Setting(wrapper).setName("Supports web search").addToggle((tg) =>
+          tg.setValue(provider.supportsWebSearch).onChange(async (v) => {
+            provider.supportsWebSearch = v;
             await this.plugin.saveSettings();
-          });
-        });
-
-      new Setting(wrapper).setName("Supports web search").addToggle((tg) =>
-        tg.setValue(provider.supportsWebSearch).onChange(async (v) => {
-          provider.supportsWebSearch = v;
-          await this.plugin.saveSettings();
-        })
-      );
-
-      new Setting(wrapper).setName("Supports vision").addToggle((tg) =>
-        tg.setValue(provider.supportsVision).onChange(async (v) => {
-          provider.supportsVision = v;
-          await this.plugin.saveSettings();
-        })
-      );
+          })
+        );
+        new Setting(wrapper).setName("Supports vision").addToggle((tg) =>
+          tg.setValue(provider.supportsVision).onChange(async (v) => {
+            provider.supportsVision = v;
+            await this.plugin.saveSettings();
+          })
+        );
+      }
     });
 
-    new Setting(containerEl).setName("Add new provider").addButton((btn) =>
+    const addProviderSetting = new Setting(providersPane).setName("Add provider").addButton((btn) =>
       btn.setButtonText("+ Add provider").onClick(() => {
         new ProviderModal(this.app, this.plugin, (provider) => {
           this.plugin.settings.providers.push(provider);
@@ -407,11 +593,12 @@ export class AgentSettingTab extends PluginSettingTab {
         }).open();
       })
     );
+    addProviderSetting.settingEl.addClass("agenter-add-provider-setting");
 
     // --- Chat behavior ---
-    new Setting(containerEl).setName("Chat behavior").setHeading();
+    new Setting(chatPane).setName("Chat behavior").setHeading();
 
-    new Setting(containerEl)
+    new Setting(chatPane)
       .setName("Default context scope")
       .setDesc("What notes to include in context by default.")
       .addDropdown((dd) => {
@@ -426,7 +613,7 @@ export class AgentSettingTab extends PluginSettingTab {
         });
       });
 
-    new Setting(containerEl)
+    new Setting(chatPane)
       .setName("Max context notes")
       .setDesc("0 = include all notes in folder/vault scope.")
       .addText((t) =>
@@ -437,7 +624,7 @@ export class AgentSettingTab extends PluginSettingTab {
         })
       );
 
-    new Setting(containerEl)
+    new Setting(chatPane)
       .setName("Max tokens")
       .addText((t) =>
         t.setValue(String(this.plugin.settings.maxTokens)).onChange(async (v) => {
@@ -447,7 +634,7 @@ export class AgentSettingTab extends PluginSettingTab {
         })
       );
 
-    new Setting(containerEl)
+    new Setting(chatPane)
       .setName("Temperature")
       .addSlider((s) =>
         s
@@ -459,14 +646,14 @@ export class AgentSettingTab extends PluginSettingTab {
           })
       );
 
-    new Setting(containerEl).setName("Streaming").addToggle((tg) =>
+    new Setting(chatPane).setName("Streaming").addToggle((tg) =>
       tg.setValue(this.plugin.settings.streaming).onChange(async (v) => {
         this.plugin.settings.streaming = v;
         await this.plugin.saveSettings();
       })
     );
 
-    new Setting(containerEl)
+    new Setting(chatPane)
       .setName("System prompt")
       .addTextArea((t) => {
         t.setValue(this.plugin.settings.systemPrompt);
@@ -478,17 +665,17 @@ export class AgentSettingTab extends PluginSettingTab {
       });
 
     // --- Custom prompt builder (form-based, no JSON required) ---
-    new Setting(containerEl).setName("Custom prompts").setHeading();
-    containerEl.createEl("p", {
+    new Setting(toolsPane).setName("Custom prompts").setHeading();
+    toolsPane.createEl("p", {
       text:
         "Build your own reusable prompts (like Summarize or Rewrite). They appear in the chat / menu and beside selected text. Use {{selection}} where the selected text should go; if omitted, the selection is appended automatically.",
       cls: "setting-item-description",
     });
-    this.renderPromptBuilder(containerEl.createDiv({ cls: "agenter-prompt-builder" }));
+    this.renderPromptBuilder(toolsPane.createDiv({ cls: "agenter-prompt-builder" }));
 
     // --- Tool approval ---
-    new Setting(containerEl).setName("Tool approval").setHeading();
-    containerEl.createEl("p", {
+    new Setting(toolsPane).setName("Tool approval").setHeading();
+    toolsPane.createEl("p", {
       text:
         "Mutating tools pause and show a preview before they run. Moving a note to Trash always requires a two-step confirmation and cannot be disabled. Every note mutation also creates a recoverable safety backup inside the vault.",
       cls: "setting-item-description",
@@ -503,7 +690,7 @@ export class AgentSettingTab extends PluginSettingTab {
       { key: "trash_note", label: "Move a note to recoverable Trash (always confirmed)" },
     ];
     for (const t of APPROVABLE) {
-      new Setting(containerEl)
+      new Setting(toolsPane)
         .setName(t.label)
         .setDesc(`Tool: ${t.key}`)
         .addToggle((tg) =>
@@ -516,6 +703,22 @@ export class AgentSettingTab extends PluginSettingTab {
             })
         );
     }
+
+    new Setting(advancedPane).setName("Cloudflare").setHeading();
+    new Setting(advancedPane)
+      .setName("Automatic model sync")
+      .setDesc("Refresh the Workers AI model catalog when Agenter starts.")
+      .addToggle((toggle) => toggle
+        .setValue(this.plugin.settings.cloudflareAutoSync)
+        .onChange(async (value) => {
+          this.plugin.settings.cloudflareAutoSync = value;
+          await this.plugin.saveSettings();
+        }));
+
+    const diag = advancedPane.createDiv({ cls: "agenter-diagnostics-card" });
+    diag.createEl("strong", { text: "Cloudflare diagnostics" });
+    diag.createEl("span", { text: cloudflare?.connectionStatus === "connected" ? "Connected" : "Not connected" });
+    diag.createEl("code", { text: cloudflare?.cloudflareAccountName ?? cloudflare?.cloudflareAccountId ?? "No account selected" });
   }
 
   private renderPromptBuilder(host: HTMLElement) {
@@ -613,6 +816,70 @@ export class AgentSettingTab extends PluginSettingTab {
     );
     modal.open();
   }
+}
+
+class CloudflareWorkersSetupModal extends Modal {
+  constructor(
+    app: App,
+    private plugin: AgenterPlugin,
+    private provider: ProviderConfig,
+    private onConnected: () => void
+  ) { super(app); }
+
+  onOpen() {
+    const { contentEl } = this;
+    contentEl.addClass("agenter-cf-setup-modal");
+    this.titleEl.setText("Connect Cloudflare Workers AI");
+    contentEl.createEl("p", {
+      cls: "setting-item-description",
+      text: "Cloudflare's official REST API uses an Account ID and Workers AI API token. The Free plan includes 10,000 Neurons per day.",
+    });
+    const free = contentEl.createDiv({ cls: "agenter-cf-free-note" });
+    free.createEl("strong", { text: "10,000 Neurons/day free" });
+    free.createEl("span", { text: "Requests stop at the free limit unless the account uses Workers Paid." });
+
+    let accountId = this.provider.cloudflareAccountId ?? "";
+    let token = this.provider.cloudflareAuthMode === "token" ? this.provider.apiKey : "";
+    const status = contentEl.createEl("p", { cls: "agenter-cf-setup-status" });
+
+    new Setting(contentEl)
+      .setName("1. Create Workers AI token")
+      .setDesc("Cloudflare pre-fills the required Workers AI permissions.")
+      .addButton((button) => button.setButtonText("Open Cloudflare Workers AI").setCta().onClick(() => {
+        window.open("https://dash.cloudflare.com/?to=/:account/ai/workers-ai", "_blank");
+      }));
+    new Setting(contentEl)
+      .setName("2. Account ID")
+      .setDesc("Copy it from Workers AI → Use REST API.")
+      .addText((input) => input.setPlaceholder("32-character Account ID").setValue(accountId).onChange((value) => accountId = value.trim()));
+    new Setting(contentEl)
+      .setName("3. API token")
+      .setDesc("Create a Workers AI API Token, then paste it here.")
+      .addText((input) => {
+        input.inputEl.type = "password";
+        input.setPlaceholder("Cloudflare Workers AI API token").setValue(token).onChange((value) => token = value.trim());
+      });
+    new Setting(contentEl)
+      .addButton((button) => button.setButtonText("Verify and connect").setCta().onClick(async () => {
+        if (!accountId || !token) { status.setText("Enter both Account ID and API token."); return; }
+        button.setDisabled(true);
+        button.setButtonText("Checking Workers AI…");
+        status.setText("Verifying credentials and loading the live model catalog…");
+        try {
+          const count = await this.plugin.connectCloudflareToken(this.provider.id, accountId, token);
+          status.setText(`Connected. ${count} Workers AI models loaded.`);
+          new Notice(`Cloudflare Workers AI connected · ${count} models`);
+          this.onConnected();
+          window.setTimeout(() => this.close(), 500);
+        } catch (error: any) {
+          status.setText(error?.message ?? String(error));
+          button.setDisabled(false);
+          button.setButtonText("Verify and connect");
+        }
+      }));
+  }
+
+  onClose() { this.contentEl.empty(); }
 }
 
 class ProviderModal extends Modal {
