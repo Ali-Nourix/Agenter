@@ -82,7 +82,7 @@ class AgenterChatView extends ItemView {
 }
 
 export default class AgenterPlugin extends Plugin {
-  settings: AgentSettings;
+  settings!: AgentSettings;
   activeChatPanel: FloatingChatPanel | null = null;
   pendingPrompt = "";
   private floatingPanel: FloatingChatPanel | null = null;

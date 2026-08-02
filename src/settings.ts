@@ -453,11 +453,10 @@ export class AgentSettingTab extends PluginSettingTab {
       }
 
       if (provider.type !== "cloudflare") {
-        new Setting(wrapper).setName(provider.type === "cloudflare" ? "Manual API token (advanced fallback)" : "API key").addText((t) => {
+        new Setting(wrapper).setName("API key").addText((t) => {
           t.inputEl.type = "password";
           t.setValue(provider.apiKey).onChange(async (v) => {
             provider.apiKey = v;
-            if (provider.type === "cloudflare") provider.cloudflareAuthMode = "token";
             await this.plugin.saveSettings();
           });
         });

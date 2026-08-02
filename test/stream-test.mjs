@@ -1,3 +1,4 @@
+import { electronMockPlugin } from "./esbuild-electron-mock.mjs";
 import { build } from "esbuild";
 import { createServer } from "http";
 import path from "path";
@@ -11,7 +12,7 @@ const result = await build({
   format: "esm",
   platform: "node",
   write: false,
-  plugins: [
+  plugins: [electronMockPlugin, 
     {
       name: "mock-obsidian",
       setup(ctx) {

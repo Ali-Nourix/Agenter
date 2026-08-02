@@ -1,3 +1,4 @@
+import { electronMockPlugin } from "./esbuild-electron-mock.mjs";
 import { build } from "esbuild";
 import path from "path";
 import { fileURLToPath } from "url";
@@ -46,5 +47,5 @@ if(answer!=="Continued after approved access.")throw new Error("assistant loop d
 if(errors.length||done!==1||round!==2)throw new Error("run lifecycle failed "+JSON.stringify({errors,done,round}));
 console.log("ACCESS_RESUME_OK");
 `;
-const result=await build({stdin:{contents:entry,resolveDir:root,loader:"ts"},bundle:true,format:"esm",platform:"node",write:false,plugins:[{name:"mock-obsidian",setup(b){b.onResolve({filter:/^obsidian$/},()=>({path:"obsidian",namespace:"mock"}));b.onLoad({filter:/.*/,namespace:"mock"},()=>({contents:obsidianMock,loader:"js"}))}}]});
+const result=await build({stdin:{contents:entry,resolveDir:root,loader:"ts"},bundle:true,format:"esm",platform:"node",write:false,plugins:[electronMockPlugin,{name:"mock-obsidian",setup(b){b.onResolve({filter:/^obsidian$/},()=>({path:"obsidian",namespace:"mock"}));b.onLoad({filter:/.*/,namespace:"mock"},()=>({contents:obsidianMock,loader:"js"}))}}]});
 await import("data:text/javascript;base64,"+Buffer.from(result.outputFiles[0].text).toString("base64"));

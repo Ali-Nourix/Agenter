@@ -1,3 +1,4 @@
+import { electronMockPlugin } from "./esbuild-electron-mock.mjs";
 /**
  * Build + run a smoke test for FloatingChatPanel using esbuild with a
  * mocked obsidian module and a minimal DOM (via jsdom). Verifies that
@@ -98,7 +99,7 @@ const result = await esbuild.build({
   format: "esm",
   platform: "node",
   write: false,
-  plugins: [
+  plugins: [electronMockPlugin, 
     {
       name: "mock-obsidian",
       setup(build) {

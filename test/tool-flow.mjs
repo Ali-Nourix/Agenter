@@ -1,3 +1,4 @@
+import { electronMockPlugin } from "./esbuild-electron-mock.mjs";
 // tool-flow.mjs — verify the send() -> orchestrator -> tool use -> render
 // flow works end to end with a mocked provider that emits a tool call.
 // This catches the "AI answers but nothing renders / tools never run" bug.
@@ -153,7 +154,7 @@ if (!lifecycleOk) throw new Error("tool/access/timeline lifecycle failed");
 const result = await build({
   stdin: { contents: entry, resolveDir: path.join(root), loader: "ts" },
   bundle: true, format: "esm", platform: "node", write: false,
-  plugins: [{
+  plugins: [electronMockPlugin, {
     name: "mock-obsidian",
     setup(b) {
       b.onResolve({ filter: /^obsidian$/ }, () => ({ path: "obsidian", namespace: "mock" }));

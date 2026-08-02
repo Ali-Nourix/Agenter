@@ -1,3 +1,4 @@
+import { electronMockPlugin } from "./esbuild-electron-mock.mjs";
 import { build } from "esbuild";
 import path from "path";
 import { fileURLToPath } from "url";
@@ -60,7 +61,7 @@ console.log("FOLDER_RACE_OK");
 const result = await build({
   stdin: { contents: entry, resolveDir: root, loader: "ts" },
   bundle: true, format: "esm", platform: "node", write: false,
-  plugins: [{
+  plugins: [electronMockPlugin, {
     name: "mock-obsidian",
     setup(b) {
       b.onResolve({ filter: /^obsidian$/ }, () => ({ path: "obsidian", namespace: "mock" }));

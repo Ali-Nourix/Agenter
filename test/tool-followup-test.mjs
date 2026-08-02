@@ -1,9 +1,10 @@
+import { electronMockPlugin } from "./esbuild-electron-mock.mjs";
 import { build } from "esbuild";
 import { createServer } from "http";
 import path from "path";
 import { fileURLToPath } from "url";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const result = await build({ entryPoints:[path.join(root,"src/api.ts")], bundle:true, format:"esm", platform:"node", write:false, plugins:[{name:"mock-obsidian",setup(ctx){ctx.onResolve({filter:/^obsidian$/},()=>({path:"obsidian",namespace:"mock"}));ctx.onLoad({filter:/.*/,namespace:"mock"},()=>({contents:'export const requestUrl=async()=>{throw new Error("unexpected fallback")}',loader:"js"}));}}] });
+const result = await build({ entryPoints:[path.join(root,"src/api.ts")], bundle:true, format:"esm", platform:"node", write:false, plugins:[electronMockPlugin,{name:"mock-obsidian",setup(ctx){ctx.onResolve({filter:/^obsidian$/},()=>({path:"obsidian",namespace:"mock"}));ctx.onLoad({filter:/.*/,namespace:"mock"},()=>({contents:'export const requestUrl=async()=>{throw new Error("unexpected fallback")}',loader:"js"}));}}] });
 const moduleUrl="data:text/javascript;base64,"+Buffer.from(result.outputFiles[0].text).toString("base64");
 const {OpenAIProvider}=await import(moduleUrl);
 let received;

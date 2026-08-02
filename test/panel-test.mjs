@@ -1,3 +1,4 @@
+import { electronMockPlugin } from "./esbuild-electron-mock.mjs";
 /**
  * DOM smoke test: verify FloatingChatPanel builds without throwing and
  * actually appends a root element to the document body (or sidebar).
@@ -85,7 +86,7 @@ const result = await esbuild.build({
   format: "esm",
   platform: "node",
   write: false,
-  plugins: [
+  plugins: [electronMockPlugin, 
     {
       name: "mocks",
       setup(build) {

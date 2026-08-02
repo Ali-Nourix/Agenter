@@ -1,3 +1,4 @@
+import { electronMockPlugin } from "./esbuild-electron-mock.mjs";
 import { build } from "esbuild";
 import path from "path";
 import { fileURLToPath } from "url";
@@ -39,5 +40,5 @@ if(!results[1]?.includes("Projects/Plan.md")||results[1]?.includes("Private/Secr
 if(answer!=="Folder access worked and the run continued."||round!==3||done!==1||errors.length)throw Error("same run did not continue "+JSON.stringify({answer,round,done,errors}));
 console.log("EXPLICIT_FOLDER_ACCESS_OK");
 `;
-const result=await build({stdin:{contents:entry,resolveDir:root,loader:"ts"},bundle:true,format:"esm",platform:"node",write:false,plugins:[{name:"mock-obsidian",setup(b){b.onResolve({filter:/^obsidian$/},()=>({path:"obsidian",namespace:"mock"}));b.onLoad({filter:/.*/,namespace:"mock"},()=>({contents:obsidianMock,loader:"js"}))}}]});
+const result=await build({stdin:{contents:entry,resolveDir:root,loader:"ts"},bundle:true,format:"esm",platform:"node",write:false,plugins:[electronMockPlugin,{name:"mock-obsidian",setup(b){b.onResolve({filter:/^obsidian$/},()=>({path:"obsidian",namespace:"mock"}));b.onLoad({filter:/.*/,namespace:"mock"},()=>({contents:obsidianMock,loader:"js"}))}}]});
 await import("data:text/javascript;base64,"+Buffer.from(result.outputFiles[0].text).toString("base64"));

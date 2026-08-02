@@ -1176,7 +1176,7 @@ export class FloatingChatPanel {
     const reasoning = bubble.createEl("pre", { cls: "agenter-typing-reasoning" });
     head.addEventListener("click", () => {
       if (!wrap.hasClass("has-reasoning")) return;
-      wrap.toggleClass("is-reasoning-collapsed");
+      wrap.toggleClass("is-reasoning-collapsed", !wrap.hasClass("is-reasoning-collapsed"));
       safeIcon(chevron, wrap.hasClass("is-reasoning-collapsed") ? "chevron-down" : "chevron-up");
     });
     wrap.appendChild(bubble);
@@ -1923,7 +1923,7 @@ function safeIcon(el: HTMLElement, icon: string, fallback = "•") {
     "text-quote": '<path d="M5 6h14M5 10h10M5 14h8"/><path d="M15 17h2l-1 3M19 17h2l-1 3"/>',
     "audio-lines": '<path d="M4 10v4M8 7v10M12 4v16M16 8v8M20 10v4"/>',
     braces: '<path d="M9 3H7a2 2 0 0 0-2 2v4a2 2 0 0 1-2 2 2 2 0 0 1 2 2v4a2 2 0 0 0 2 2h2M15 3h2a2 2 0 0 1 2 2v4a2 2 0 0 0 2 2 2 2 0 0 0-2 2v4a2 2 0 0 1-2 2h-2"/>',
-    "brain-circuit": '<path d="M9 4a3 3 0 0 0-3 3v1a3 3 0 0 0-2 5 3 3 0 0 0 3 4h2M15 4a3 3 0 0 1 3 3v1a3 3 0 0 1 2 5 3 3 0 0 1-3 4h-2M9 4v16M15 4v16M9 9h3l2-2M15 14h-3l-2 2"/><circle cx="14" cy="7" r="1"/><circle cx="10" cy="16" r="1"/>',
+    "brain-circuit": '<path d="M9.5 4.5A3.5 3.5 0 0 0 6 8v.5A3.5 3.5 0 0 0 4 15a3.5 3.5 0 0 0 3.5 4.5h2M14.5 4.5A3.5 3.5 0 0 1 18 8v.5A3.5 3.5 0 0 1 20 15a3.5 3.5 0 0 1-3.5 4.5h-2M9.5 4.5v15M14.5 4.5v15M9.5 9h2.8l2.2-2.2M14.5 14h-2.8l-2.2 2.2"/><circle cx="14.5" cy="6.8" r=".8"/><circle cx="9.5" cy="16.2" r=".8"/>',
     database: '<ellipse cx="12" cy="5" rx="7" ry="3"/><path d="M5 5v6c0 1.7 3.1 3 7 3s7-1.3 7-3V5"/><path d="M5 11v6c0 1.7 3.1 3 7 3s7-1.3 7-3v-6"/>',
     "maximize-2": '<path d="M8 3H3v5M16 3h5v5M8 21H3v-5M21 16v5h-5"/>',
     "panel-right": '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M15 4v16"/>',

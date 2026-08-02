@@ -4113,23 +4113,48 @@
 .agenter-msg.is-typing.has-reasoning .agenter-typing-head { cursor: pointer; }
 .agenter-typing-visual {
   position: relative;
+  isolation: isolate;
   display: grid;
-  width: 26px;
-  height: 26px;
-  flex: 0 0 26px;
+  width: 28px;
+  height: 28px;
+  flex: 0 0 28px;
   place-items: center;
-  border-radius: 8px;
+  overflow: visible;
+  border: 1px solid color-mix(in srgb, var(--interactive-accent) 14%, transparent);
+  border-radius: 50%;
   color: var(--interactive-accent);
   background: color-mix(in srgb, var(--interactive-accent) 10%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--background-primary) 34%, transparent);
+}
+.agenter-typing-visual svg {
+  position: relative;
+  z-index: 2;
+  width: 15px;
+  height: 15px;
+  stroke-width: 1.8;
+}
+.agenter-msg.is-typing.is-reasoning-live .agenter-typing-visual::before {
+  content: "";
+  position: absolute;
+  z-index: 0;
+  inset: 3px;
+  border-radius: 50%;
+  background: radial-gradient(circle, color-mix(in srgb, var(--interactive-accent) 18%, transparent) 0%, transparent 70%);
+  animation: agenter-brain-breathe 1.4s ease-in-out infinite;
 }
 .agenter-msg.is-typing.is-reasoning-live .agenter-typing-visual::after {
   content: "";
   position: absolute;
-  inset: -3px;
-  border: 1.5px solid transparent;
+  z-index: 1;
+  inset: -4px;
+  box-sizing: border-box;
+  border: 1.5px solid color-mix(in srgb, var(--interactive-accent) 13%, transparent);
   border-top-color: var(--interactive-accent);
-  border-radius: 10px;
-  animation: agenter-reasoning-orbit 1.05s linear infinite;
+  border-right-color: color-mix(in srgb, var(--interactive-accent) 55%, transparent);
+  border-radius: 50%;
+  transform-origin: 50% 50%;
+  animation: agenter-brain-orbit .95s linear infinite;
+  will-change: transform;
 }
 .agenter-typing-head .agenter-typing-label { flex: 1; font-size: 11.5px; font-weight: 600; }
 .agenter-typing-chevron { display: none; width: 18px; height: 18px; padding: 2px; color: var(--text-muted); }
@@ -4152,3 +4177,18 @@
 .agenter-msg.is-typing.is-reasoning-complete .agenter-typing-visual::after { display: none; }
 /* Retire the separate reasoning card from v1.6.0. */
 .agenter-reasoning-card { display: none !important; }
+
+@keyframes agenter-brain-orbit {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+@keyframes agenter-brain-breathe {
+  0%, 100% { opacity: .45; transform: scale(.86); }
+  50% { opacity: 1; transform: scale(1.08); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .agenter-msg.is-typing.is-reasoning-live .agenter-typing-visual::after,
+  .agenter-msg.is-typing.is-reasoning-live .agenter-typing-visual::before {
+    animation: none;
+  }
+}

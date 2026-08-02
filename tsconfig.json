@@ -12,6 +12,7 @@
     "strictNullChecks": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
+    "types": ["node"],
     "lib": ["DOM", "ES2020"]
   },
   "include": ["main.ts", "src/**/*.ts"]

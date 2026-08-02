@@ -90,8 +90,12 @@ export async function fetchCloudflareModels(config: ProviderConfig): Promise<Mod
   if (resp.status >= 400) throw new Error(`Cloudflare error ${resp.status}: ${(resp.text ?? "").slice(0, 240)}`);
   const json = typeof resp.json === "function" ? resp.json() : JSON.parse(resp.text || "{}");
   const rows = Array.isArray(json.result) ? json.result : Array.isArray(json.result?.models) ? json.result.models : [];
-  const models = rows.map(inferCloudflareCapabilities).filter((m: ModelMetadata) => !!m.id && !/^@cf\/[0-9a-f-]{32,36}$/i.test(m.id));
-  const unique = Array.from(new Map(models.map((model: ModelMetadata) => [model.id, model])).values());
+  const models: ModelMetadata[] = (rows as any[])
+    .map((row) => inferCloudflareCapabilities(row))
+    .filter((model) => !!model.id && !/^@cf\/[0-9a-f-]{32,36}$/i.test(model.id));
+  const unique: ModelMetadata[] = Array.from(
+    new Map<string, ModelMetadata>(models.map((model) => [model.id, model])).values()
+  );
   const taskRank = (model: ModelMetadata) => {
     const task = String(model.task ?? "").toLowerCase();
     if (task.includes("text generation")) return 0;

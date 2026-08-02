@@ -1,3 +1,4 @@
+import { electronMockPlugin } from "./esbuild-electron-mock.mjs";
 // run-test.mjs — bundles test/smoke.ts with a mocked "obsidian" module
 // and runs it under Node, so we can verify tool logic without Obsidian.
 import * as esbuild from "esbuild";
@@ -38,7 +39,7 @@ const result = await esbuild.build({
   format: "esm",
   platform: "node",
   write: false,
-  plugins: [
+  plugins: [electronMockPlugin, 
     {
       name: "mock-obsidian",
       setup(build) {
