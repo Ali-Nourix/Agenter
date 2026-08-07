@@ -303,7 +303,7 @@ export class AgentSettingTab extends PluginSettingTab {
     const cloudflare = this.plugin.settings.providers.find((p) => p.type === "cloudflare");
     const hero = containerEl.createDiv({ cls: "agenter-settings-hero" });
     const heroText = hero.createDiv({ cls: "agenter-settings-hero-copy" });
-    new Setting(heroText).setName("Settings").setDesc("Agenter").setHeading();
+    new Setting(heroText).setName("General").setDesc("Agenter").setHeading();
     const heroStatus = hero.createDiv({ cls: "agenter-settings-hero-status" });
     heroStatus.createEl("span", { cls: `agenter-status-dot ${active?.apiKey ? "is-online" : ""}` });
     const statusCopy = heroStatus.createDiv();
