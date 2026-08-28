@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Agenter contextual popover preview</title>
+  <link rel="stylesheet" href="obsidian-theme.css">
+  <link rel="stylesheet" href="../styles.css">
+  <style>
+    /* Only the fake note behind the popover is styled here. The popover itself
+       is rendered entirely by the plugin's own styles.css. */
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      padding: 26px;
+      background: var(--background-primary);
+      color: var(--text-normal);
+      font-family: var(--font-ui);
+    }
+    .note {
+      position: relative;
+      width: 760px;
+      min-height: 330px;
+      padding: 26px 30px;
+      border-radius: 10px;
+      background: var(--background-primary);
+      font-family: var(--font-text);
+      font-size: 15px;
+      line-height: 1.72;
+    }
+    .note h2 { margin: 0 0 12px; font-size: 21px; letter-spacing: -0.01em; }
+    .note p { margin: 0 0 12px; color: var(--text-normal); max-width: 44ch; }
+    .sel { background: color-mix(in srgb, var(--interactive-accent) 30%, transparent); border-radius: 2px; }
+    /* The plugin positions the popover with these two custom properties. */
+    .agenter-ctx { --agenter-ctx-left: 372px; --agenter-ctx-top: 96px; position: absolute; animation: none; }
+  </style>
+</head>
+<body>
+  <main class="note">
+    <h2>Release planning</h2>
+    <p>The launch depends on three things landing in the same week.</p>
+    <p><span class="sel">Ship the migration guide, freeze the API surface, and get the
+      onboarding copy reviewed before the announcement goes out.</span></p>
+    <p>Everything else can slip a sprint without hurting the date.</p>
+
+    <div class="agenter-ctx" role="dialog" aria-label="Agenter contextual chat">
+      <div class="agenter-ctx-head agenter-ctx-drag">
+        <span class="agenter-ctx-mark">
+          <svg class="svg-icon" viewBox="0 0 24 24"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"/></svg>
+        </span>
+        <button class="agenter-ctx-count" type="button" aria-expanded="false">19 words selected</button>
+        <button class="agenter-ctx-icon is-active" type="button" aria-label="Pinned">
+          <svg class="svg-icon" viewBox="0 0 24 24"><path d="M12 17v5"/><path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V7a1 1 0 0 1 1-1 2 2 0 0 0 0-4H8a2 2 0 0 0 0 4 1 1 0 0 1 1 1z"/></svg>
+        </button>
+        <button class="agenter-ctx-icon" type="button" aria-label="Continue in the main panel">
+          <svg class="svg-icon" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M15 3v18"/></svg>
+        </button>
+        <button class="agenter-ctx-icon" type="button" aria-label="Close">
+          <svg class="svg-icon" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></svg>
+        </button>
+      </div>
+
+      <div class="agenter-ctx-quote markdown-rendered"></div>
+
+      <div class="agenter-ctx-log">
+        <div class="agenter-ctx-row is-user">Rewrite this as three separate tasks.</div>
+        <div class="agenter-ctx-row is-status">Using write_note…</div>
+        <div class="agenter-ctx-row is-assistant markdown-rendered">
+          <ul>
+            <li>Ship the migration guide</li>
+            <li>Freeze the API surface</li>
+            <li>Get onboarding copy reviewed</li>
+          </ul>
+          <p>All three are due before the announcement.</p>
+        </div>
+      </div>
+
+      <div class="agenter-ctx-actions">
+        <button class="agenter-ctx-chip" type="button"><span class="agenter-ctx-chip-icon"><svg class="svg-icon" viewBox="0 0 24 24"><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/></svg></span><span>Summarize</span></button>
+        <button class="agenter-ctx-chip" type="button"><span class="agenter-ctx-chip-icon"><svg class="svg-icon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M9.1 9a3 3 0 0 1 5.8 1c0 2-3 3-3 3"/><path d="M12 17h.01"/></svg></span><span>Explain</span></button>
+        <button class="agenter-ctx-chip" type="button"><span class="agenter-ctx-chip-icon"><svg class="svg-icon" viewBox="0 0 24 24"><path d="M17 3a2.8 2.8 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5z"/></svg></span><span>Rewrite</span></button>
+        <button class="agenter-ctx-chip" type="button"><span class="agenter-ctx-chip-icon"><svg class="svg-icon" viewBox="0 0 24 24"><path d="m5 8 6 6M4 14l6-6 2-3M2 5h12M7 2h1M22 22l-5-10-5 10M14 18h6"/></svg></span><span>Translate</span></button>
+        <button class="agenter-ctx-chip" type="button"><span class="agenter-ctx-chip-icon"><svg class="svg-icon" viewBox="0 0 24 24"><path d="m6 16 6-12 6 12M8 12h8M4 21c1.1 0 1.1-1 2.3-1s1.1 1 2.3 1 1.1-1 2.3-1 1.2 1 2.3 1 1.1-1 2.3-1 1.1 1 2.3 1 1.1-1 2.3-1"/></svg></span><span>Proofread</span></button>
+        <button class="agenter-ctx-chip" type="button"><span class="agenter-ctx-chip-icon"><svg class="svg-icon" viewBox="0 0 24 24"><path d="m3 17 2 2 4-4M3 7l2 2 4-4M13 6h8M13 12h8M13 18h8"/></svg></span><span>To tasks</span></button>
+      </div>
+
+      <div class="agenter-ctx-composer">
+        <textarea class="agenter-ctx-input" rows="1" placeholder="Ask about the selection…"></textarea>
+        <button class="agenter-ctx-send" type="button" aria-label="Send">
+          <svg class="svg-icon" viewBox="0 0 24 24"><path d="M12 19V5M5 12l7-7 7 7"/></svg>
+        </button>
+      </div>
+    </div>
+  </main>
+
+  <script>
+    const params = new URLSearchParams(location.search);
+    if (params.has("light")) document.body.classList.add("light");
+    // Same two classes the plugin toggles at runtime.
+    if (params.has("chatting")) {
+      document.querySelector(".agenter-ctx").classList.add("is-chatting");
+      // The card grows once a conversation is in it; give the note room so a
+      // cropped screenshot does not clip the composer.
+      document.querySelector(".note").style.minHeight = "440px";
+    }
+    if (params.has("quoting")) {
+      const ctx = document.querySelector(".agenter-ctx");
+      ctx.classList.add("is-quoting");
+      ctx.querySelector(".agenter-ctx-quote").textContent =
+        "Ship the migration guide, freeze the API surface, and get the onboarding copy reviewed before the announcement goes out.";
+    }
+  </script>
+</body>
+</html>

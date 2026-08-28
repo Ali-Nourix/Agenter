@@ -4,42 +4,9 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Agenter UI preview</title>
+  <link rel="stylesheet" href="obsidian-theme.css">
   <link rel="stylesheet" href="../styles.css">
   <style>
-    :root {
-      --font-ui: Inter, "Segoe UI", Roboto, sans-serif;
-      --font-monospace: Consolas, monospace;
-      /* Dark theme (Obsidian default) */
-      --background-primary: #1e1e1e;
-      --background-primary-alt: #191919;
-      --background-secondary: #262626;
-      --background-modifier-border: #363636;
-      --background-modifier-hover: rgba(255,255,255,0.06);
-      --interactive-accent: #7f6df2;
-      --interactive-accent-hover: #9586f8;
-      --interactive-success: #55b982;
-      --text-normal: #e6e6e6;
-      --text-muted: #9a9a9a;
-      --text-faint: #6f6f6f;
-      --text-on-accent: #ffffff;
-      --text-warning: #e9b949;
-      --text-error: #ef6b73;
-      --shadow-l: 0 16px 48px rgba(0,0,0,0.4);
-    }
-    body.light {
-      --background-primary: #ffffff;
-      --background-primary-alt: #f7f6f4;
-      --background-secondary: #f4f3f1;
-      --background-modifier-border: #e4e2df;
-      --background-modifier-hover: rgba(0,0,0,0.045);
-      --interactive-accent: #6a58e8;
-      --interactive-accent-hover: #5847d6;
-      --text-normal: #2c2c2b;
-      --text-muted: #75726d;
-      --text-faint: #a3a09b;
-      --text-on-accent: #ffffff;
-      background: #ecebe8;
-    }
     * { box-sizing: border-box; }
     body {
       margin: 0;
@@ -54,8 +21,8 @@
       font-family: var(--font-ui);
     }
     .preview-shell {
-      width: 420px;
-      height: 720px;
+      width: 470px;
+      height: 620px;
       flex-shrink: 0;
       border: 1px solid var(--background-modifier-border);
       border-radius: 12px;
@@ -111,7 +78,7 @@
         <div class="agenter-chat">
           <div class="agenter-messages">
             <div class="agenter-msg agenter-msg-user">
-              <div class="agenter-bubble">این نوت را خلاصه کن و سه اقدام بعدی پیشنهاد بده.</div>
+              <div class="agenter-bubble">Summarize this note and suggest three next actions.</div>
             </div>
             <div class="agenter-tool-line">
               <div class="agenter-tool-line-head">
@@ -123,14 +90,16 @@
             <div class="agenter-msg agenter-msg-assistant">
               <div class="agenter-avatar">A</div>
               <div class="agenter-bubble">
-                <p><strong>خلاصه</strong></p>
-                <p>این یادداشت روی برنامه‌ریزی انتشار نسخه جدید و هماهنگی تیم تمرکز دارد.</p>
-                <p><strong>اقدام‌های بعدی</strong></p>
+                <p><strong>Summary</strong></p>
+                <p>The note is about sequencing the next release and keeping the team
+                  aligned on what has to land first.</p>
+                <p><strong>Next actions</strong></p>
                 <ol>
-                  <li>مالک هر کار را مشخص کن.</li>
-                  <li>موعد بازبینی را ثبت کن.</li>
-                  <li>ریسک‌های انتشار را بررسی کن.</li>
+                  <li>Give every open item an owner.</li>
+                  <li>Put the review date on the calendar.</li>
+                  <li>Walk through the release risks.</li>
                 </ol>
+                <p dir="rtl">فارسی و انگلیسی در یک گفتگو، با جهت درست متن.</p>
                 <p>Want me to turn these into tasks in your daily note?</p>
               </div>
               <button class="agenter-copy-btn" aria-label="Copy">

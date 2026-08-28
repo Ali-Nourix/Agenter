@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.7.1 - Scrollable chip row, and previews of the real UI
+
+- The contextual popover's action row read as clipped rather than scrollable;
+  the trailing-edge fade is back.
+- Added `test/ctx-preview.html` and `test/render-previews.mjs`, offline
+  harnesses that render the real `styles.css` over Obsidian's theme variables,
+  and moved the theme variables into a shared `test/obsidian-theme.css`.
+- Rewrote the README around those renders: corrected the required Obsidian
+  version (1.7.2, not 1.4.0), completed the provider list, and moved the
+  Cloudflare section out from under the License heading.
+
+
 ## 1.7.0 - Pinnable contextual popover and theme-aware chat
 
 - Redesigned the selection popover: one header row, a collapsed quote of the selection, scrollable action chips, and a single composer, all built from Obsidian's own theme variables.
