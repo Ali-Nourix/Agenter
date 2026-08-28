@@ -137,7 +137,9 @@ styles.css
    git push origin 1.1.2
    ```
 
-5. The included GitHub Actions workflow builds the plugin and creates a GitHub release containing `main.js`, `manifest.json`, `styles.css`, and a zip of the same three files.
+5. The included GitHub Actions workflow validates that the tag, manifest, package, lockfile, and `versions.json` all agree, runs the tests, builds, and creates a GitHub release containing `main.js`, `manifest.json`, `styles.css`, and `agenter-<version>.zip` holding the same three files.
+
+Running the workflow by hand from the Actions tab produces those same files as downloadable artifacts without creating a release.
 
 ## Security
 
