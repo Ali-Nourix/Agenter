@@ -69,12 +69,24 @@ jobs:
           test -s manifest.json
           test -s styles.css
 
+      # Two shapes of the same build: the three loose files Obsidian's community
+      # installer reads, and a zip for anyone installing by hand into
+      # .obsidian/plugins/. The zip holds the files at its root so it can be
+      # unpacked straight into the plugin folder.
+      - name: Package plugin zip
+        env:
+          PLUGIN_ID: agenter
+        run: |
+          zip -j "${PLUGIN_ID}-${GITHUB_REF_NAME}.zip" main.js manifest.json styles.css
+          unzip -l "${PLUGIN_ID}-${GITHUB_REF_NAME}.zip"
+
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
+          PLUGIN_ID: agenter
         run: |
           gh release create "${GITHUB_REF_NAME}" \
             --verify-tag \
             --title "${GITHUB_REF_NAME}" \
             --generate-notes \
-            main.js manifest.json styles.css
+            main.js manifest.json styles.css "${PLUGIN_ID}-${GITHUB_REF_NAME}.zip"

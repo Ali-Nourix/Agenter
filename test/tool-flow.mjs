@@ -76,7 +76,10 @@ plugin.app = {
   },
   vault: {
     getAbstractFileByPath: () => null,
-    read: async () => "", create: async () => {}, modify: async () => {},
+    getFileByPath: () => null,
+    getFolderByPath: () => null,
+    read: async () => "", cachedRead: async () => "", create: async () => {}, modify: async () => {},
+    process: async (f, fn) => fn(""),
   },
   setting: { open(){}, openTabById(){} },
 };

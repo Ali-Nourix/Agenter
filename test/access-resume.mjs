@@ -18,7 +18,7 @@ import { AgentOrchestrator } from "../src/orchestrator";
 import { OpenAIProvider } from "../src/api";
 import { TFile, TFolder } from "obsidian";
 const allowed=new TFile("Allowed.md"), secret=new TFile("Secret.md"), root=new TFolder("");root.children=[allowed,secret];
-const app={vault:{getRoot(){return root},getMarkdownFiles(){return[allowed,secret]},getFiles(){return[allowed,secret]},getAbstractFileByPath(p){return p==="Allowed.md"?allowed:p==="Secret.md"?secret:p===""?root:null},async read(f){return f.path==="Secret.md"?"TOP SECRET":"ALLOWED"},async cachedRead(f){return this.read(f)}},workspace:{getActiveFile(){return allowed}},metadataCache:{},fileManager:{}};
+const app={vault:{getRoot(){return root},getMarkdownFiles(){return[allowed,secret]},getFiles(){return[allowed,secret]},getAbstractFileByPath(p){return p==="Allowed.md"?allowed:p==="Secret.md"?secret:p===""?root:null},getFileByPath(p){const f=this.getAbstractFileByPath(p);return f&&f.extension!==undefined?f:null},getFolderByPath(p){const f=this.getAbstractFileByPath(p);return f&&f.children!==undefined?f:null},async process(f,fn){const next=fn(await this.read(f));if(this.modify)await this.modify(f,next);return next},async read(f){return f.path==="Secret.md"?"TOP SECRET":"ALLOWED"},async cachedRead(f){return this.read(f)}},workspace:{getActiveFile(){return allowed}},metadataCache:{},fileManager:{}};
 const settings={providers:[{id:"p",name:"OpenAI",type:"openai",baseUrl:"https://api.openai.com/v1",apiKey:"x",model:"gpt-4o",extraHeaders:"",supportsWebSearch:true,supportsVision:true}],activeProviderId:"p",maxTokens:1000,temperature:.2,systemPrompt:"test",toolApproval:{}};
 let round=0;
 OpenAIProvider.prototype.chat=async function(messages,tools,cb){

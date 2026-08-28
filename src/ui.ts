@@ -233,7 +233,6 @@ export class FloatingChatPanel {
 
     const stopBtn = mkIconBtn("square", "Stop generating", () => this.abort());
     stopBtn.addClass("agenter-stop");
-    stopBtn.setCssStyles({ display: "none" });
     const newBtn = mkIconBtn("plus", "New chat", () => this.newSession());
     const floatBtn = mkIconBtn(
       this.mode === "docked" ? "maximize-2" : "panel-right",
@@ -510,7 +509,6 @@ export class FloatingChatPanel {
     // --- Attachments selected for multimodal Workers AI models. ---
     const attachmentStrip = document.createElement("div");
     attachmentStrip.addClass("agenter-attachment-strip");
-    attachmentStrip.setCssStyles({ display: "none" });
     this.attachmentStripEl = attachmentStrip;
     composer.appendChild(attachmentStrip);
 
@@ -880,11 +878,8 @@ export class FloatingChatPanel {
 
   private renderPendingAttachments() {
     this.attachmentStripEl.empty();
-    if (!this.pendingParts.length) {
-      this.attachmentStripEl.setCssStyles({ display: "none" });
-      return;
-    }
-    this.attachmentStripEl.setCssStyles({ display: "flex" });
+    this.attachmentStripEl.toggleClass("has-items", this.pendingParts.length > 0);
+    if (!this.pendingParts.length) return;
     for (const part of this.pendingParts) {
       const chip = this.attachmentStripEl.createDiv({ cls: "agenter-attachment-chip" });
       const icon = chip.createSpan({ cls: "agenter-attachment-icon" });
@@ -1600,7 +1595,7 @@ The current chat will not restart.`;
       typing.addClass("has-reasoning", "is-reasoning-complete", "is-reasoning-collapsed");
       const elapsed = reasoningStartedAt ? Math.max(0.1, (Date.now() - reasoningStartedAt) / 1000) : 0;
       if (reasoningLabel) reasoningLabel.textContent = elapsed ? `Thought for ${elapsed.toFixed(elapsed < 10 ? 1 : 0)}s` : "Reasoning complete";
-      if (reasoningDots) reasoningDots.setCssStyles({ display: "none" });
+      reasoningDots?.addClass("is-hidden");
       if (reasoningChevron) safeIcon(reasoningChevron, "chevron-down");
     };
     const appendReasoning = (token: string) => {
@@ -1729,7 +1724,7 @@ The current chat will not restart.`;
   private toggleStop(show: boolean) {
     const header = this.rootEl.querySelector(".agenter-header") as any;
     const stop = header?._stopBtn as HTMLElement | undefined;
-    if (stop) stop.setCssStyles({ display: show ? "flex" : "none" });
+    stop?.toggleClass("is-visible", show);
   }
 
   // ------------------------------------------------------------ context
@@ -1937,7 +1932,7 @@ function safeIcon(el: HTMLElement, icon: string, fallback = "•") {
   el.empty();
   if (!path) {
     el.setText(fallback);
-    el.setCssStyles({ fontSize: "16px", lineHeight: "1" });
+    el.addClass("agenter-icon-fallback");
     return;
   }
   const NS = "http://www.w3.org/2000/svg";

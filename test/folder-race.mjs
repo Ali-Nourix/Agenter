@@ -39,6 +39,9 @@ const app = {
       }
       return null;
     },
+    getFileByPath(path) { const f = this.getAbstractFileByPath(path); return f && f.extension !== undefined ? f : null; },
+    getFolderByPath(path) { const f = this.getAbstractFileByPath(path); return f && f.children !== undefined ? f : null; },
+    async process(file, fn) { const next = fn(await this.read(file)); await this.modify(file, next); return next; },
     async createFolder(path) { throw new Error("Folder already exists."); },
     async read(file) { return file.path === note.path ? noteContent : ""; },
     async create(path, content) { created.push([path, content]); },

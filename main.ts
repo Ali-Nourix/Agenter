@@ -1,4 +1,4 @@
-import { Component, ItemView, MarkdownView, MarkdownRenderer, Notice, Plugin, WorkspaceLeaf } from "obsidian";
+import { Editor, ItemView, MarkdownView, Notice, Plugin, WorkspaceLeaf } from "obsidian";
 import {
   AgentSettings,
   DEFAULT_SETTINGS,
@@ -7,37 +7,21 @@ import {
   getActiveSession,
 } from "./src/settings";
 import { FloatingChatPanel } from "./src/ui";
-import { AgentOrchestrator, ChatCallbacks } from "./src/orchestrator";
+import { SelectionPopover, openSelectionPopover } from "./src/selection-popover";
 import { fetchCloudflareModels, cacheExpiry } from "./src/cloudflare";
 import { connectCloudflareOAuth, listCloudflareAccounts, refreshCloudflareOAuth, revokeCloudflareOAuth } from "./src/cloudflare-oauth";
 
 export const AGENTER_VIEW_TYPE = "agenter-chat-view";
 
-/** Tiny inline SVG icon helper for plugin-level UI (selection popover). */
-function safeIconHtml(el: HTMLElement, icon: string) {
-  const paths: Record<string, string> = {
-    sparkles: "M12 3l1.7 5.2L19 10l-5.3 1.8L12 17l-1.7-5.2L5 10l5.3-1.8z",
-    x: "M6 6l12 12M18 6L6 18",
-  };
-  el.empty();
-  const d = paths[icon];
-  if (!d) {
-    el.setText("•");
-    return;
-  }
-  const NS = "http://www.w3.org/2000/svg";
-  const svg = document.createElementNS(NS, "svg");
-  svg.setAttribute("viewBox", "0 0 24 24");
-  svg.setAttribute("aria-hidden", "true");
-  svg.setAttribute("fill", "none");
-  svg.setAttribute("stroke", "currentColor");
-  svg.setAttribute("stroke-width", "1.8");
-  svg.setAttribute("stroke-linecap", "round");
-  svg.setAttribute("stroke-linejoin", "round");
-  const p = document.createElementNS(NS, "path");
-  p.setAttribute("d", d);
-  svg.appendChild(p);
-  el.appendChild(svg);
+/**
+ * `cursorCoords` is part of Obsidian's CodeMirror-backed editor but is not in
+ * the public typings, so it is declared here instead of casting to `any`.
+ */
+interface EditorWithCoords extends Editor {
+  cursorCoords?: (
+    start: boolean,
+    mode?: "window" | "page" | "local"
+  ) => { left: number; top: number; bottom: number } | undefined;
 }
 
 class AgenterChatView extends ItemView {
@@ -84,7 +68,6 @@ class AgenterChatView extends ItemView {
 export default class AgenterPlugin extends Plugin {
   settings!: AgentSettings;
   activeChatPanel: FloatingChatPanel | null = null;
-  pendingPrompt = "";
   private floatingPanel: FloatingChatPanel | null = null;
   private selectionTimer: number | null = null;
 
@@ -159,6 +142,8 @@ export default class AgenterPlugin extends Plugin {
   }
 
   onunload() {
+    if (this.selectionTimer !== null) window.clearTimeout(this.selectionTimer);
+    SelectionPopover.closeCurrent();
     this.closeFloatingPanel();
   }
 
@@ -339,401 +324,54 @@ export default class AgenterPlugin extends Plugin {
     this.app.workspace.detachLeavesOfType(AGENTER_VIEW_TYPE);
   }
 
+  /**
+   * Debounced so a drag-select fires once, when the pointer settles, rather
+   * than on every intermediate mouseup.
+   */
   private scheduleSelectionAI(event: MouseEvent | KeyboardEvent) {
+    if (!this.settings.contextualAutoShow) return;
     const target = event.target as HTMLElement | null;
-    if (target?.closest?.(".agenter-root, .agenter-selection-popover, .menu, .modal-container")) return;
+    if (target?.closest?.(".agenter-root, .agenter-ctx, .menu, .modal-container")) return;
     if (this.selectionTimer !== null) window.clearTimeout(this.selectionTimer);
     this.selectionTimer = window.setTimeout(() => {
       this.selectionTimer = null;
-      const view = this.app.workspace.getActiveViewOfType(MarkdownView) as any;
-      const editor = view?.editor;
-      const selection = editor?.getSelection?.()?.trim?.() ?? "";
+      const editor = this.app.workspace.getActiveViewOfType(MarkdownView)?.editor;
+      const selection = editor?.getSelection?.().trim() ?? "";
       if (!selection) {
-        document.querySelector(".agenter-selection-popover")?.remove();
+        SelectionPopover.closeCurrent();
         return;
       }
-      const cursor = editor.cursorCoords?.("to") ?? editor.cursorCoords?.();
-      const point = {
-        x: cursor?.left ?? (event instanceof MouseEvent ? event.clientX : window.innerWidth / 2),
-        y: cursor?.bottom ?? (event instanceof MouseEvent ? event.clientY : window.innerHeight / 2),
-      };
-      this.showSelectionAI(editor, selection, point);
+      // Auto-show must not steal the caret while the user is still working.
+      this.showSelectionAI(editor, selection, event, false);
     }, 90);
   }
 
-  /** Contextual third chat mode: compact, selection-anchored, and self-contained. */
+  /**
+   * Contextual third chat mode. The caret point is only consulted when the
+   * popover is set to follow the selection; a pinned popover ignores it.
+   */
   showSelectionAI(
-    editor: any,
+    editor: Editor | undefined,
     selection: string,
-    point?: { x: number; y: number }
+    event?: MouseEvent | KeyboardEvent,
+    focus = true
   ) {
-    const cursor = editor.cursorCoords ? editor.cursorCoords("to") : null;
-    const x = point?.x ?? cursor?.left ?? window.innerWidth / 2;
-    const y = point?.y ?? cursor?.bottom ?? window.innerHeight / 2;
-    document.querySelector(".agenter-selection-popover")?.remove();
-
-    const popover = document.createElement("div");
-    popover.addClass("agenter-selection-popover", "is-contextual");
-    const sourcePath = this.app.workspace.getActiveFile()?.path ?? "";
-
-    // Dedicated short-lived component so we never pass the plugin (long-lived)
-    // as the render owner. Unloaded automatically when the popover is removed.
-    const renderComponent = new Component();
-    renderComponent.load();
-    let popoverWasConnected = false;
-    const lifecycleObserver = new MutationObserver(() => {
-      if (popover.isConnected) {
-        popoverWasConnected = true;
-        return;
-      }
-      if (popoverWasConnected) {
-        renderComponent.unload();
-        lifecycleObserver.disconnect();
-      }
-    });
-    lifecycleObserver.observe(document.body, { childList: true, subtree: true });
-
-    const renderMd = (text: string, target: HTMLElement) => {
-      target.empty();
-      target.addClass("markdown-rendered");
-      target.dir = /[\u0590-\u08FF]/.test(text) ? "rtl" : "ltr";
-      MarkdownRenderer.render(this.app, text, target, sourcePath, renderComponent).catch(() => {
-        target.setText(text);
-      });
-    };
-
-    const position = () => {
-      const rect = popover.getBoundingClientRect();
-      const left = Math.max(8, Math.min(x + 7, window.innerWidth - rect.width - 8));
-      let top = y + 7;
-      if (top + rect.height > window.innerHeight - 8) top = Math.max(8, y - rect.height - 7);
-      popover.style.left = `${left}px`;
-      popover.style.top = `${top}px`;
-    };
-
-    const head = document.createElement("div");
-    head.addClass("agenter-selection-popover-head");
-    const brand = document.createElement("span");
-    brand.addClass("agenter-selection-brand");
-    safeIconHtml(brand, "sparkles");
-    const title = document.createElement("span");
-    title.textContent = "Agenter";
-    head.append(brand, title);
-    const openMainBtn = document.createElement("button");
-    openMainBtn.addClass("agenter-selection-open-main");
-    openMainBtn.textContent = "Main panel";
-    openMainBtn.setAttribute("aria-label", "Continue this chat in the main panel");
-    openMainBtn.addEventListener("click", () => void openInMain());
-    head.appendChild(openMainBtn);
-    const closeBtn = document.createElement("button");
-    closeBtn.addClass("agenter-selection-popover-close");
-    closeBtn.textContent = "×";
-    closeBtn.setAttribute("aria-label", "Close contextual chat");
-    closeBtn.addEventListener("click", () => popover.remove());
-    head.appendChild(closeBtn);
-    popover.appendChild(head);
-
-    // Real Obsidian markdown preview in an expandable context capsule.
-    const previewShell = document.createElement("section");
-    previewShell.addClass("agenter-selection-preview-shell");
-    const previewTop = document.createElement("button");
-    previewTop.addClass("agenter-selection-preview-top");
-    const contextLabel = document.createElement("span");
-    const wordCount = selection.trim().split(/\s+/).filter(Boolean).length;
-    contextLabel.textContent = `${wordCount} words · ${selection.split("\n").length} lines`;
-    const expandLabel = document.createElement("span");
-    expandLabel.textContent = "Show full";
-    previewTop.append(contextLabel, expandLabel);
-    const preview = document.createElement("div");
-    preview.addClass("agenter-selection-preview", "markdown-rendered");
-    renderMd(selection, preview);
-    previewShell.append(previewTop, preview);
-    previewTop.addEventListener("click", () => {
-      const expanded = !previewShell.hasClass("is-expanded");
-      previewShell.toggleClass("is-expanded", expanded);
-      expandLabel.textContent = expanded ? "Collapse" : "Show full";
-      window.requestAnimationFrame(position);
-    });
-    popover.appendChild(previewShell);
-
-    // Inline conversation log: hidden until Chat here / a prompt / a question is used.
-    const chatLog = document.createElement("div");
-    chatLog.addClass("agenter-selection-chat-log");
-    popover.appendChild(chatLog);
-
-    const actionRow = document.createElement("div");
-    actionRow.addClass("agenter-selection-primary-actions");
-    const insert = document.createElement("button");
-    insert.textContent = "Send to main chat";
-    insert.addEventListener("click", async () => {
-      popover.remove();
-      await this.ensureChatOpen();
-      this.activeChatPanel?.insertPromptFromOutside(selection);
-    });
-    const chatHere = document.createElement("button");
-    chatHere.addClass("is-primary");
-    chatHere.textContent = "Ask here";
-    actionRow.append(insert, chatHere);
-    popover.appendChild(actionRow);
-
-    const prompts = this.settings.customPrompts ?? {};
-    const list = document.createElement("div");
-    list.addClass("agenter-selection-actions");
-    popover.appendChild(list);
-
-    const composer = document.createElement("div");
-    composer.addClass("agenter-selection-composer");
-    const input = document.createElement("textarea");
-    input.rows = 1;
-    input.placeholder = "Ask about selection…";
-    const send = document.createElement("button");
-    send.setAttribute("aria-label", "Send in contextual chat");
-    send.textContent = "↑";
-    composer.append(input, send);
-    popover.appendChild(composer);
-
-    const orchestrator = new AgentOrchestrator(this.app, this.settings);
-    orchestrator.setAccessScope({
-      mode: sourcePath ? "note" : "none",
-      notePath: sourcePath || undefined,
-      folderPath: sourcePath.includes("/") ? sourcePath.slice(0, sourcePath.lastIndexOf("/")) : "",
-    });
-    const session = getActiveSession(this.settings);
-    // Unified history: continue the same conversation as the main panel
-    // instead of starting from an empty context.
-    orchestrator.setMessages(
-      session.messages
-        .filter((m) => m.role === "user" || m.role === "assistant")
-        .map((m) => ({ role: m.role as "user" | "assistant", content: m.content }))
-    );
-    const persistToSession = async () => {
-      const stored: any[] = [];
-      for (const m of orchestrator.messages) {
-        if (m.role === "user") stored.push({ role: "user", content: m.content ?? "" });
-        else if (m.role === "assistant" && (m.content ?? "").trim())
-          stored.push({ role: "assistant", content: m.content });
-        else if (m.role === "tool")
-          stored.push({ role: "tool", content: m.content ?? "", toolName: (m as any).tool_name });
-      }
-      if (!stored.length) return;
-      session.messages = stored.slice(-200);
-      session.updatedAt = Date.now();
-      if (session.title === "New chat") session.title = deriveTitle(session.messages);
-      await this.saveSettings();
-      this.activeChatPanel?.reloadActiveSession();
-    };
-    const openInMain = async () => {
-      await persistToSession();
-      popover.remove();
-      await this.ensureChatOpen();
-      this.activeChatPanel?.reloadActiveSession();
-    };
-    let busy = false;
-    let hasSelectionContext = false;
-    let hydrated = false;
-
-    const enterChatMode = () => {
-      popover.addClass("is-chatting");
-      chatHere.textContent = "In-place chat";
-      input.placeholder = "Continue here…";
-      if (!hydrated) {
-        hydrated = true;
-        for (const m of session.messages) {
-          if (m.role === "user") appendBubble("user", m.content);
-          else if (m.role === "assistant" && (m.content ?? "").trim())
-            appendBubble("assistant", m.content);
-        }
-      }
-      window.requestAnimationFrame(() => { position(); input.focus(); });
-    };
-
-    const appendBubble = (role: "user" | "assistant" | "status", text: string) => {
-      const bubble = document.createElement("div");
-      bubble.addClass("agenter-selection-chat-message", `is-${role}`);
-      if (role === "status") bubble.setText(text);
-      else renderMd(text, bubble);
-      chatLog.appendChild(bubble);
-      chatLog.scrollTop = chatLog.scrollHeight;
-      return bubble;
-    };
-
-    const requestInlineApproval = (call: { name: string; arguments: string }, customLabel?: string): Promise<boolean> =>
-      new Promise((resolve) => {
-        let a: any = {};
-        try { a = JSON.parse(call.arguments || "{}"); } catch { /* ignore */ }
-        const card = document.createElement("div");
-        card.addClass("agenter-selection-approval");
-        const destructive = call.name === "trash_note";
-        if (destructive) card.addClass("is-destructive");
-        const lbl = document.createElement("div");
-        lbl.addClass("agenter-selection-approval-label");
-        const verb = call.name.replace(/[-_]/g, " ");
-        lbl.textContent = customLabel ?? (a.path ? `${verb}: ${a.path}` : verb);
-        card.appendChild(lbl);
-        const row = document.createElement("div");
-        row.addClass("agenter-selection-approval-actions");
-        const reject = document.createElement("button");
-        reject.textContent = "Reject";
-        const approve = document.createElement("button");
-        approve.addClass("is-primary");
-        approve.textContent = destructive ? "Review deletion" : "Approve";
-        row.append(reject, approve);
-        card.appendChild(row);
-        chatLog.appendChild(card);
-        chatLog.scrollTop = chatLog.scrollHeight;
-        window.requestAnimationFrame(position);
-        const settle = (ok: boolean) => {
-          row.remove();
-          const st = document.createElement("div");
-          st.addClass("agenter-selection-approval-status");
-          st.textContent = ok ? "✓ Approved" : "✕ Rejected";
-          card.appendChild(st);
-          resolve(ok);
-        };
-        let armed = false;
-        let armTimer: number | null = null;
-        approve.addEventListener("click", () => {
-          if (!destructive) { settle(true); return; }
-          if (!armed) {
-            armed = true;
-            approve.textContent = "Click again: Move to Trash";
-            armTimer = window.setTimeout(() => { armed = false; approve.textContent = "Review deletion"; }, 6000);
-            return;
-          }
-          if (armTimer !== null) window.clearTimeout(armTimer);
-          settle(true);
-        });
-        reject.addEventListener("click", () => settle(false));
-      });
-
-    const runInline = async (question: string) => {
-      const clean = question.trim();
-      if (!clean || busy) return;
-      enterChatMode();
-      busy = true;
-      send.disabled = true;
-      input.value = "";
-      appendBubble("user", clean);
-      const typing = appendBubble("status", "Thinking…");
-      let response = "";
-      let responseEl: HTMLElement | null = null;
-      let renderTimer: number | null = null;
-      const alreadyHasContext = clean.includes(selection);
-      const prompt = hasSelectionContext || alreadyHasContext
-        ? clean
-        : `${clean}\n\n<selected-text>\n${selection}\n</selected-text>`;
-      hasSelectionContext = true;
-      orchestrator.shouldAbort = () => !document.body.contains(popover);
-
-      const flush = () => {
-        if (!responseEl) return;
-        renderMd(response, responseEl);
-        chatLog.scrollTop = chatLog.scrollHeight;
-      };
-      let reasoningEl: HTMLElement | null = null;
-      let reasoningText = "";
-      const callbacks: ChatCallbacks = {
-        onReasoningToken: (token) => {
-          if (typing.parentNode) typing.remove();
-          if (!reasoningEl) {
-            reasoningEl = appendBubble("status", "");
-            reasoningEl.addClass("is-reasoning");
-          }
-          reasoningText += token;
-          reasoningEl.textContent = `Thinking · ${reasoningText}`;
-          chatLog.scrollTop = chatLog.scrollHeight;
-        },
-        onAssistantToken: (token) => {
-          reasoningEl?.addClass("is-complete");
-          if (typing.parentNode) typing.remove();
-          if (!responseEl) responseEl = appendBubble("assistant", "");
-          response += token;
-          if (renderTimer === null) {
-            renderTimer = window.setTimeout(() => {
-              renderTimer = null;
-              flush();
-            }, 70);
-          }
-        },
-        onToolUse: (name) => {
-          if (typing.parentNode) typing.remove();
-          appendBubble("status", `Using ${name}…`);
-        },
-        onToolResult: () => {},
-        // Tool calls now work here too: read-only tools run automatically and
-        // mutating tools show an inline Approve / Reject card.
-        onAccessRequest: (request) => requestInlineApproval(
-          { name: "access", arguments: "{}" },
-          `Allow ${request.requestedMode} access for this run${request.targetPath ? `: ${request.targetPath}` : ""}`
-        ),
-        onApprovalRequest: (call) => requestInlineApproval(call),
-        onError: (error) => {
-          if (typing.parentNode) typing.remove();
-          appendBubble("status", `Error: ${error}`);
-        },
-        onDone: () => {
-          if (renderTimer !== null) window.clearTimeout(renderTimer);
-          if (typing.parentNode) typing.remove();
-          flush();
-          busy = false;
-          send.disabled = false;
-          input.focus();
-          void persistToSession();
-          window.requestAnimationFrame(position);
-        },
-      };
-      await orchestrator.run(prompt, callbacks);
-    };
-
-    const quickActions = [
-      ["Summarize", "Summarize this selection clearly in concise bullet points."],
-      ["Explain", "Explain this selection simply, preserving important details."],
-      ["Rewrite", "Rewrite this selection to be clearer and more polished."],
-      ["Translate", "Translate this selection. Infer the most useful target language from the current text and conversation."],
-      ["Fix writing", "Fix grammar, spelling, punctuation, and readability without changing the meaning."],
-      ["Make tasks", "Convert this selection into a practical Markdown checklist."],
-    ] as const;
-    for (const [label, instruction] of quickActions) {
-      const button = document.createElement("button");
-      button.addClass("agenter-selection-action", "is-quick");
-      button.textContent = label;
-      button.addEventListener("click", () => void runInline(instruction));
-      list.appendChild(button);
-    }
-
-    Object.entries(prompts).slice(0, 4).forEach(([key, template]) => {
-      const btn = document.createElement("button");
-      btn.addClass("agenter-selection-action");
-      btn.textContent = key.replace(/[-_]/g, " ");
-      btn.title = String(template);
-      btn.addEventListener("click", () => {
-        const tmpl = String(template);
-        const filled = tmpl.includes("{{selection}}")
-          ? tmpl.replace(/\{\{\s*selection\s*\}\}/g, selection)
-          : tmpl;
-        void runInline(filled);
-      });
-      list.appendChild(btn);
-    });
-
-    chatHere.addEventListener("click", () => enterChatMode());
-    const submit = () => void runInline(input.value);
-    send.addEventListener("click", submit);
-    input.addEventListener("keydown", (e) => {
-      if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); submit(); }
-    });
-
-    document.body.appendChild(popover);
-    position();
-
-    const onDown = (ev: MouseEvent) => {
-      if (!popover.contains(ev.target as Node)) {
-        popover.remove();
-        document.removeEventListener("mousedown", onDown, true);
-      }
-    };
-    window.setTimeout(() => document.addEventListener("mousedown", onDown, true), 0);
+    const caret = this.caretPoint(editor, event);
+    const popover = openSelectionPopover(this, selection, caret);
+    if (focus) popover?.focus();
   }
+
+  /** Bottom-left of the selection end, falling back to the pointer. */
+  private caretPoint(
+    editor: Editor | undefined,
+    event?: MouseEvent | KeyboardEvent
+  ): { x: number; y: number } | undefined {
+    const coords = (editor as EditorWithCoords | undefined)?.cursorCoords?.(false, "window");
+    if (coords) return { x: coords.left, y: coords.bottom };
+    if (event instanceof MouseEvent) return { x: event.clientX, y: event.clientY };
+    return undefined;
+  }
+
 
   async ensureChatOpen(): Promise<void> {
     if (this.activeChatPanel) return;

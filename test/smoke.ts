@@ -14,6 +14,13 @@ import { TFile } from "obsidian";
 const TFileMock = TFile;
 const fakeVault: any = {
   getAbstractFileByPath: (p: string) => (fakeVault._files[p] ? new TFileMock(p) : null),
+  getFileByPath: (p: string) => (fakeVault._files[p] ? new TFileMock(p) : null),
+  getFolderByPath: (_p: string) => null,
+  process: async (f: any, fn: (data: string) => string) => {
+    const next = fn(fakeVault._files[f.path] ?? "");
+    fakeVault._files[f.path] = next;
+    return next;
+  },
   read: async (f: any) => fakeVault._files[f.path] ?? "",
   create: async (p: string, c: string) => {
     fakeVault._files[p] = c;

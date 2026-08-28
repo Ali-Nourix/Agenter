@@ -102,6 +102,15 @@ export interface AgentSettings {
   cloudflareJsonMode: boolean;
   cloudflareOAuthClientId: string;
   modelOptions: Record<string, Record<string, string | number | boolean>>;
+  /** Show the contextual popover automatically after a selection is made. */
+  contextualAutoShow: boolean;
+  /**
+   * Where the contextual popover appears: beside the caret, or on the spot the
+   * user pinned it to. Dragging the popover switches this to "pinned".
+   */
+  contextualAnchor: "selection" | "pinned";
+  /** Viewport coordinates of the pinned spot, in pixels. */
+  contextualPinned: { x: number; y: number } | null;
 }
 
 export const DEFAULT_SETTINGS: AgentSettings = {
@@ -225,6 +234,9 @@ export const DEFAULT_SETTINGS: AgentSettings = {
   cloudflareJsonMode: false,
   cloudflareOAuthClientId: "",
   modelOptions: {},
+  contextualAutoShow: true,
+  contextualAnchor: "selection",
+  contextualPinned: null,
   toolApproval: {
     write_note: true,
     edit_note: true,
@@ -372,13 +384,8 @@ export class AgentSettingTab extends PluginSettingTab {
     this.plugin.settings.providers
       .filter((provider) => provider.id === this.plugin.settings.activeProviderId)
       .forEach((provider) => {
+      // .agenter-provider-block owns the border / radius / spacing.
       const wrapper = providersPane.createDiv({ cls: "agenter-provider-block" });
-      wrapper.setCssStyles({
-        border: "1px solid var(--background-modifier-border)",
-        borderRadius: "8px",
-        padding: "12px",
-        marginBottom: "12px",
-      });
 
       new Setting(wrapper)
         .setName(provider.name)
@@ -653,6 +660,54 @@ export class AgentSettingTab extends PluginSettingTab {
         await this.plugin.saveSettings();
       })
     );
+
+    // --- Contextual popover (appears when text is selected) ---
+    new Setting(chatPane).setName("Contextual popover").setHeading();
+
+    new Setting(chatPane)
+      .setName("Show on selection")
+      .setDesc("Open the contextual chat automatically after text is selected. When off, use the command or the editor menu.")
+      .addToggle((tg) =>
+        tg.setValue(this.plugin.settings.contextualAutoShow).onChange(async (v) => {
+          this.plugin.settings.contextualAutoShow = v;
+          await this.plugin.saveSettings();
+        })
+      );
+
+    new Setting(chatPane)
+      .setName("Placement")
+      .setDesc("Follow the selection, or keep the popover on one fixed spot. Dragging the popover by its header also pins it there.")
+      .addDropdown((dd) => {
+        dd.addOption("selection", "Follow the selection");
+        dd.addOption("pinned", "Fixed spot");
+        dd.setValue(this.plugin.settings.contextualAnchor);
+        dd.onChange(async (v) => {
+          this.plugin.settings.contextualAnchor = v === "pinned" ? "pinned" : "selection";
+          await this.plugin.saveSettings();
+          this.display();
+        });
+      });
+
+    if (this.plugin.settings.contextualAnchor === "pinned") {
+      const pinned = this.plugin.settings.contextualPinned;
+      new Setting(chatPane)
+        .setName("Fixed spot")
+        .setDesc(
+          pinned
+            ? `Currently at ${Math.round(pinned.x)} x ${Math.round(pinned.y)} px. Drag the popover by its header to move it.`
+            : "Not set yet — the popover starts in the bottom-right corner. Drag it by its header to choose a spot."
+        )
+        .addButton((btn) =>
+          btn
+            .setButtonText("Reset to bottom right")
+            .setDisabled(!pinned)
+            .onClick(async () => {
+              this.plugin.settings.contextualPinned = null;
+              await this.plugin.saveSettings();
+              this.display();
+            })
+        );
+    }
 
     new Setting(chatPane)
       .setName("System prompt")
@@ -958,8 +1013,7 @@ class ProviderModal extends Modal {
       })
     );
 
-    const status = contentEl.createEl("p");
-    status.setCssStyles({ fontSize: "12px", opacity: "0.8" });
+    const status = contentEl.createEl("p", { cls: "agenter-modal-status" });
 
     new Setting(contentEl).addButton((btn) =>
       btn.setButtonText("Test connection & fetch models").onClick(async () => {

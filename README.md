@@ -6,7 +6,7 @@ Agenter brings a tool-using AI assistant into Obsidian. Chat in the right sideba
 
 ## Features
 
-- **Three chat modes:** docked sidebar, floating panel, and contextual chat beside selected text.
+- **Three chat modes:** docked sidebar, floating panel, and a contextual popover for the current selection — either beside the caret or pinned to a fixed spot you choose.
 - **Multiple AI providers:** OpenAI, Anthropic, Gemini, OpenAI-compatible services, and custom endpoints.
 - **Vault-aware context:** work with the current note, current folder, the whole vault, or no automatic context.
 - **Tool use:** read and search notes, inspect links and metadata, list folders, summarize content, search the web, fetch URLs, and work with note images when the selected model supports vision.
@@ -35,14 +35,14 @@ Once Agenter is listed in the Obsidian Community directory:
 
 ### Manual installation
 
-1. Download `main.js`, `manifest.json`, and `styles.css` from the matching GitHub release.
+1. Download `main.js`, `manifest.json`, and `styles.css` from the matching GitHub release, or the `agenter-<version>.zip` asset that contains all three.
 2. Create this folder inside your vault:
 
    ```text
    .obsidian/plugins/agenter/
    ```
 
-3. Copy the three release files into that folder.
+3. Copy the three release files into that folder, or unzip `agenter-<version>.zip` directly inside it.
 4. Restart Obsidian or reload the app.
 5. Open **Settings → Community plugins** and enable **Agenter**.
 
@@ -62,10 +62,25 @@ API keys are stored locally in Obsidian's plugin data file (`data.json`). They a
 
 - Run **Agenter: Open chat in right sidebar** from the Command Palette, or use the ribbon icon.
 - Use the header control to switch between docked and floating modes.
-- Select text in a note to open the contextual AI panel.
+- Select text in a note to open the contextual popover, or run **Agenter: Run AI action on selection**.
+- Drag the contextual popover by its header to pin it to one spot; it opens there from then on. The pin button in its header toggles between following the selection and staying put.
 - Choose the context chip in the composer to switch between note, folder, vault, and no context.
 - Type `/` or select **AI Actions** to use saved prompts.
 - Open **Settings → Agenter → Custom prompts** to create, rename, edit, or remove prompt actions.
+
+### Contextual popover
+
+Selecting text opens a compact card with the selected text collapsed behind its word count, a row of quick actions (plus your own custom prompts), and a composer that continues the same conversation as the main panel.
+
+Placement is yours to choose in **Settings → Agenter → Chat → Contextual popover**:
+
+| Setting | What it does |
+| --- | --- |
+| **Show on selection** | Turn off to keep the popover out of the way; open it from the Command Palette or the editor menu instead. |
+| **Placement → Follow the selection** | The popover opens beside the caret, flipping above it when there is no room below. |
+| **Placement → Fixed spot** | The popover always opens on one spot. Drag it there once by its header, or reset it to the bottom-right corner. |
+
+Dragging the popover anywhere also switches it to **Fixed spot** and saves where it landed, so "put it here and keep it here" needs no trip to settings.
 
 ### Tool approvals
 
@@ -122,7 +137,7 @@ styles.css
    git push origin 1.1.2
    ```
 
-5. The included GitHub Actions workflow builds the plugin and creates a GitHub release containing `main.js`, `manifest.json`, and `styles.css`.
+5. The included GitHub Actions workflow builds the plugin and creates a GitHub release containing `main.js`, `manifest.json`, `styles.css`, and a zip of the same three files.
 
 ## Security
 

@@ -1,9 +1,9 @@
 {
   "id": "agenter",
   "name": "Agenter",
-  "version": "1.6.3",
+  "version": "1.7.0",
   "minAppVersion": "1.7.2",
-  "description": "AI agent with native Cloudflare Workers AI OAuth, live model discovery, multi-provider chat, and vault-scoped tools.",
+  "description": "AI agent with native Cloudflare Workers AI OAuth, live model discovery, multi-provider chat, vault-scoped tools, and a pinnable contextual popover for the current selection.",
   "author": "Ali",
   "authorUrl": "https://github.com/Ali-Nourix",
   "isDesktopOnly": true

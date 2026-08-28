@@ -551,17 +551,17 @@ export class ToolRegistry {
 
   private async readNote(path: string): Promise<string> {
     const p = safeVaultPath(path);
-    const file = this.app.vault.getAbstractFileByPath(p);
-    if (!file || !(file instanceof TFile) || file.extension !== "md") return `Note not found: ${p}`;
-    return await this.app.vault.read(file);
+    const file = this.app.vault.getFileByPath(p);
+    if (!file || file.extension !== "md") return `Note not found: ${p}`;
+    return await this.app.vault.cachedRead(file);
   }
 
   private async writeNote(path: string, content: string): Promise<string> {
     const p = safeVaultPath(path, true);
-    const existing = this.app.vault.getAbstractFileByPath(p);
-    if (existing instanceof TFile) {
+    const existing = this.app.vault.getFileByPath(p);
+    if (existing) {
       const backup = await createSafetyBackup(this.app, existing, "overwrite");
-      await this.app.vault.modify(existing, String(content ?? ""));
+      await this.app.vault.process(existing, () => String(content ?? ""));
       return `Overwrote ${p}\nSafety backup: ${backup}`;
     }
     await ensureParentFolder(this.app, p);
@@ -571,25 +571,26 @@ export class ToolRegistry {
 
   private async editNote(path: string, oldS: string, newS: string): Promise<string> {
     const p = safeVaultPath(path, true);
-    const file = this.app.vault.getAbstractFileByPath(p);
-    if (!file || !(file instanceof TFile)) return `Note not found: ${p}`;
-    const content = await this.app.vault.read(file);
+    const file = this.app.vault.getFileByPath(p);
+    if (!file) return `Note not found: ${p}`;
     if (!String(oldS ?? "")) return "old_string cannot be empty.";
+    const content = await this.app.vault.read(file);
     const count = content.split(oldS).length - 1;
     if (count === 0) return `old_string not found in ${p}`;
     if (count > 1) return `old_string is not unique in ${p} (found ${count} matches)`;
     const backup = await createSafetyBackup(this.app, file, "edit");
-    await this.app.vault.modify(file, content.replace(oldS, String(newS ?? "")));
+    // process() re-reads under the vault lock, so an edit that landed between
+    // the check above and this write is replaced rather than clobbered.
+    await this.app.vault.process(file, (data) => data.replace(oldS, String(newS ?? "")));
     return `Edited ${p}\nSafety backup: ${backup}`;
   }
 
   private async appendNote(path: string, content: string): Promise<string> {
     const p = safeVaultPath(path, true);
-    const file = this.app.vault.getAbstractFileByPath(p);
-    if (!file || !(file instanceof TFile)) return `Note not found: ${p}`;
-    const existing = await this.app.vault.read(file);
+    const file = this.app.vault.getFileByPath(p);
+    if (!file) return `Note not found: ${p}`;
     const backup = await createSafetyBackup(this.app, file, "append");
-    await this.app.vault.modify(file, existing + "\n" + String(content ?? ""));
+    await this.app.vault.process(file, (data) => data + "\n" + String(content ?? ""));
     return `Appended to ${p}\nSafety backup: ${backup}`;
   }
 
@@ -614,9 +615,9 @@ export class ToolRegistry {
     const root = this.app.vault.getRoot();
     let base = root;
     if (folder && folder !== "vault") {
-      const f = this.app.vault.getAbstractFileByPath(safeVaultPath(folder));
-      if (f instanceof TFolder) base = f;
-      else return `Folder not found: ${folder}`;
+      const f = this.app.vault.getFolderByPath(safeVaultPath(folder));
+      if (!f) return `Folder not found: ${folder}`;
+      base = f;
     }
     const out: string[] = [];
     VaultWalker(base, (file) => {
@@ -632,9 +633,9 @@ export class ToolRegistry {
   }
 
   private async getNoteImages(path: string): Promise<string> {
-    const file = this.app.vault.getAbstractFileByPath(safeVaultPath(path));
-    if (!file || !(file instanceof TFile)) return `Note not found: ${path}`;
-    const content = await this.app.vault.read(file);
+    const file = this.app.vault.getFileByPath(safeVaultPath(path));
+    if (!file) return `Note not found: ${path}`;
+    const content = await this.app.vault.cachedRead(file);
     // Find image links: ![[img.png]] and ![alt](img.png)
     const emb: string[] = [];
     let embMatch: RegExpExecArray | null;
@@ -648,8 +649,8 @@ export class ToolRegistry {
     const out: string[] = [];
     for (const name of names) {
       const imgPath = safeVaultPath(resolveSibling(file, name));
-      const imgFile = this.app.vault.getAbstractFileByPath(imgPath);
-      if (imgFile instanceof TFile) {
+      const imgFile = this.app.vault.getFileByPath(imgPath);
+      if (imgFile) {
         const buf = await this.app.vault.readBinary(imgFile);
         const mime = mimeFromName(name);
         const b64 = arrayBufferToBase64(buf);
@@ -664,19 +665,19 @@ export class ToolRegistry {
   private async currentNote(): Promise<string> {
     const capturedPath = this.accessScope.notePath;
     const active = capturedPath
-      ? this.app.vault.getAbstractFileByPath(capturedPath)
+      ? this.app.vault.getFileByPath(capturedPath)
       : this.app.workspace.getActiveFile();
-    if (!(active instanceof TFile)) return "No note available in the selected context.";
+    if (!active) return "No note available in the selected context.";
     if (!this.isPathAllowed(active.path)) throw new Error("Access denied: active note is outside the selected context.");
-    const content = await this.app.vault.read(active);
+    const content = await this.app.vault.cachedRead(active);
     return `Current note path: ${active.path}\n\n${content}`;
   }
 
   private async readNoteSection(path: string, heading: string): Promise<string> {
     const p = safeVaultPath(path, true);
-    const file = this.app.vault.getAbstractFileByPath(p);
-    if (!(file instanceof TFile)) return `Note not found: ${p}`;
-    const content = await this.app.vault.read(file);
+    const file = this.app.vault.getFileByPath(p);
+    if (!file) return `Note not found: ${p}`;
+    const content = await this.app.vault.cachedRead(file);
     const wanted = String(heading ?? "").replace(/^#+\s*/, "").trim().toLowerCase();
     if (!wanted) return "Heading is required.";
     const lines = content.split("\n");
@@ -699,8 +700,8 @@ export class ToolRegistry {
 
   private noteMetadata(path: string): string {
     const p = safeVaultPath(path, true);
-    const file = this.app.vault.getAbstractFileByPath(p);
-    if (!(file instanceof TFile)) return `Note not found: ${p}`;
+    const file = this.app.vault.getFileByPath(p);
+    if (!file) return `Note not found: ${p}`;
     const cache: any = this.app.metadataCache.getFileCache(file) ?? {};
     const tags = Array.from(new Set([
       ...(cache.tags ?? []).map((t: any) => t.tag),
@@ -720,8 +721,8 @@ export class ToolRegistry {
 
   private noteLinks(path: string): string {
     const p = safeVaultPath(path, true);
-    const file = this.app.vault.getAbstractFileByPath(p);
-    if (!(file instanceof TFile)) return `Note not found: ${p}`;
+    const file = this.app.vault.getFileByPath(p);
+    if (!file) return `Note not found: ${p}`;
     const cache: any = this.app.metadataCache.getFileCache(file) ?? {};
     const outgoing = (cache.links ?? []).map((l: any) => l.link);
     const embeds = (cache.embeds ?? []).map((l: any) => l.link);
@@ -737,8 +738,8 @@ export class ToolRegistry {
     let base: TFolder = this.app.vault.getRoot();
     if (folder && folder !== "vault") {
       const p = safeVaultPath(folder);
-      const found = this.app.vault.getAbstractFileByPath(p);
-      if (!(found instanceof TFolder)) return `Folder not found: ${p}`;
+      const found = this.app.vault.getFolderByPath(p);
+      if (!found) return `Folder not found: ${p}`;
       base = found;
     }
     const out: string[] = [];
@@ -764,8 +765,8 @@ export class ToolRegistry {
   private async moveNote(path: string, destination: string): Promise<string> {
     const from = safeVaultPath(path, true);
     const to = safeVaultPath(destination, true);
-    const file = this.app.vault.getAbstractFileByPath(from);
-    if (!(file instanceof TFile)) return `Note not found: ${from}`;
+    const file = this.app.vault.getFileByPath(from);
+    if (!file) return `Note not found: ${from}`;
     if (this.app.vault.getAbstractFileByPath(to)) return `Destination already exists: ${to}`;
     const backup = await createSafetyBackup(this.app, file, "move");
     await ensureParentFolder(this.app, to);
@@ -775,8 +776,8 @@ export class ToolRegistry {
 
   private async trashNote(path: string): Promise<string> {
     const p = safeVaultPath(path, true);
-    const file = this.app.vault.getAbstractFileByPath(p);
-    if (!(file instanceof TFile)) return `Note not found: ${p}`;
+    const file = this.app.vault.getFileByPath(p);
+    if (!file) return `Note not found: ${p}`;
     const backup = await createSafetyBackup(this.app, file, "trash");
     await this.app.fileManager.trashFile(file);
     return `Moved ${p} to Obsidian Trash (recoverable).\nSafety backup: ${backup}`;
@@ -904,9 +905,9 @@ export class ToolRegistry {
     const root = this.app.vault.getRoot();
     let base: TFolder = root;
     if (folder && folder !== "vault") {
-      const f = this.app.vault.getAbstractFileByPath(safeVaultPath(folder));
-      if (f instanceof TFolder) base = f;
-      else return `Folder not found: ${folder}`;
+      const f = this.app.vault.getFolderByPath(safeVaultPath(folder));
+      if (!f) return `Folder not found: ${folder}`;
+      base = f;
     }
     const q = String(query ?? "").toLowerCase().trim();
     const out: string[] = [];
@@ -1053,6 +1054,8 @@ async function createSafetyBackup(app: App, file: TFile, reason: string): Promis
   const safeName = file.path.replace(/[^a-zA-Z0-9._\u0600-\u06FF-]+/g, "_");
   let backup = `${folder}/${safeName}.${reason}.${stamp}.md`;
   if (app.vault.getAbstractFileByPath(backup)) backup = `${folder}/${safeName}.${reason}.${Date.now()}.md`;
+  // A backup must capture what is actually on disk, so this one path keeps
+  // read() instead of the cached copy used for display-only reads.
   await app.vault.create(backup, await app.vault.read(file));
   return backup;
 }
