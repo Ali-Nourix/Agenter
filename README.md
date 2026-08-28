@@ -139,7 +139,17 @@ styles.css
 
 5. The included GitHub Actions workflow validates that the tag, manifest, package, lockfile, and `versions.json` all agree, runs the tests, builds, and creates a GitHub release containing `main.js`, `manifest.json`, `styles.css`, and `agenter-<version>.zip` holding the same three files.
 
-Running the workflow by hand from the Actions tab produces those same files as downloadable artifacts without creating a release.
+### Releasing without a local tag
+
+The same workflow can be run from the **Actions** tab, which is useful when you cannot push a tag from a clone:
+
+| Input | Effect |
+| --- | --- |
+| *(none)* | Builds and uploads the zip and the three loose files as run artifacts. Nothing is tagged or published. |
+| **publish** | Also creates the tag — taken from `manifest.json`, so the metadata check still has to pass — and the GitHub release with all four assets. |
+| **target** | The commit-ish to build and tag. Defaults to the branch the run was started from; set it to `main` to release from the default branch. |
+
+`gh release create` refuses to overwrite an existing release, so a version can only be published once.
 
 ## Security
 
