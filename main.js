@@ -28,7 +28,7 @@ __export(main_exports, {
   default: () => AgenterPlugin
 });
 module.exports = __toCommonJS(main_exports);
-var import_obsidian7 = require("obsidian");
+var import_obsidian8 = require("obsidian");
 
 // src/settings.ts
 var import_obsidian3 = require("obsidian");
@@ -1112,6 +1112,9 @@ var DEFAULT_SETTINGS = {
   cloudflareJsonMode: false,
   cloudflareOAuthClientId: "",
   modelOptions: {},
+  contextualAutoShow: true,
+  contextualAnchor: "selection",
+  contextualPinned: null,
   toolApproval: {
     write_note: true,
     edit_note: true,
@@ -1178,8 +1181,7 @@ var AgentSettingTab = class extends import_obsidian3.PluginSettingTab {
     const cloudflare = this.plugin.settings.providers.find((p) => p.type === "cloudflare");
     const hero = containerEl.createDiv({ cls: "agenter-settings-hero" });
     const heroText = hero.createDiv({ cls: "agenter-settings-hero-copy" });
-    heroText.createEl("h1", { text: "Agenter" });
-    heroText.createEl("p", { text: "Settings" });
+    new import_obsidian3.Setting(heroText).setName("Overview").setDesc("Configure providers, chat behavior, tools, and advanced options").setHeading();
     const heroStatus = hero.createDiv({ cls: "agenter-settings-hero-status" });
     heroStatus.createEl("span", { cls: `agenter-status-dot ${active?.apiKey ? "is-online" : ""}` });
     const statusCopy = heroStatus.createDiv();
@@ -1238,12 +1240,6 @@ var AgentSettingTab = class extends import_obsidian3.PluginSettingTab {
     });
     this.plugin.settings.providers.filter((provider) => provider.id === this.plugin.settings.activeProviderId).forEach((provider) => {
       const wrapper = providersPane.createDiv({ cls: "agenter-provider-block" });
-      wrapper.setCssStyles({
-        border: "1px solid var(--background-modifier-border)",
-        borderRadius: "8px",
-        padding: "12px",
-        marginBottom: "12px"
-      });
       new import_obsidian3.Setting(wrapper).setName(provider.name).setDesc(`Type: ${provider.type}`).addButton(
         (btn) => btn.setButtonText("Remove").onClick(async () => {
           this.plugin.settings.providers = this.plugin.settings.providers.filter(
@@ -1478,6 +1474,35 @@ var AgentSettingTab = class extends import_obsidian3.PluginSettingTab {
         await this.plugin.saveSettings();
       })
     );
+    new import_obsidian3.Setting(chatPane).setName("Contextual popover").setHeading();
+    new import_obsidian3.Setting(chatPane).setName("Show on selection").setDesc("Open the contextual chat automatically after text is selected. When off, use the command or the editor menu.").addToggle(
+      (tg) => tg.setValue(this.plugin.settings.contextualAutoShow).onChange(async (v) => {
+        this.plugin.settings.contextualAutoShow = v;
+        await this.plugin.saveSettings();
+      })
+    );
+    new import_obsidian3.Setting(chatPane).setName("Placement").setDesc("Follow the selection, or keep the popover on one fixed spot. Dragging the popover by its header also pins it there.").addDropdown((dd) => {
+      dd.addOption("selection", "Follow the selection");
+      dd.addOption("pinned", "Fixed spot");
+      dd.setValue(this.plugin.settings.contextualAnchor);
+      dd.onChange(async (v) => {
+        this.plugin.settings.contextualAnchor = v === "pinned" ? "pinned" : "selection";
+        await this.plugin.saveSettings();
+        this.display();
+      });
+    });
+    if (this.plugin.settings.contextualAnchor === "pinned") {
+      const pinned = this.plugin.settings.contextualPinned;
+      new import_obsidian3.Setting(chatPane).setName("Fixed spot").setDesc(
+        pinned ? `Currently at ${Math.round(pinned.x)} x ${Math.round(pinned.y)} px. Drag the popover by its header to move it.` : "Not set yet \u2014 the popover starts in the bottom-right corner. Drag it by its header to choose a spot."
+      ).addButton(
+        (btn) => btn.setButtonText("Reset to bottom right").setDisabled(!pinned).onClick(async () => {
+          this.plugin.settings.contextualPinned = null;
+          await this.plugin.saveSettings();
+          this.display();
+        })
+      );
+    }
     new import_obsidian3.Setting(chatPane).setName("System prompt").addTextArea((t) => {
       t.setValue(this.plugin.settings.systemPrompt);
       t.inputEl.rows = 4;
@@ -1720,8 +1745,7 @@ var ProviderModal = class extends import_obsidian3.Modal {
         status.setText(`\u2705 ${res.models.length} models loaded. Pick one above.`);
       })
     );
-    const status = contentEl.createEl("p");
-    status.setCssStyles({ fontSize: "12px", opacity: "0.8" });
+    const status = contentEl.createEl("p", { cls: "agenter-modal-status" });
     new import_obsidian3.Setting(contentEl).addButton(
       (btn) => btn.setButtonText("Test connection & fetch models").onClick(async () => {
         btn.setDisabled(true);
@@ -2258,16 +2282,16 @@ var ToolRegistry = class {
   }
   async readNote(path) {
     const p = safeVaultPath(path);
-    const file = this.app.vault.getAbstractFileByPath(p);
-    if (!file || !(file instanceof import_obsidian4.TFile) || file.extension !== "md") return `Note not found: ${p}`;
-    return await this.app.vault.read(file);
+    const file = this.app.vault.getFileByPath(p);
+    if (!file || file.extension !== "md") return `Note not found: ${p}`;
+    return await this.app.vault.cachedRead(file);
   }
   async writeNote(path, content) {
     const p = safeVaultPath(path, true);
-    const existing = this.app.vault.getAbstractFileByPath(p);
-    if (existing instanceof import_obsidian4.TFile) {
+    const existing = this.app.vault.getFileByPath(p);
+    if (existing) {
       const backup = await createSafetyBackup(this.app, existing, "overwrite");
-      await this.app.vault.modify(existing, String(content ?? ""));
+      await this.app.vault.process(existing, () => String(content ?? ""));
       return `Overwrote ${p}
 Safety backup: ${backup}`;
     }
@@ -2277,25 +2301,24 @@ Safety backup: ${backup}`;
   }
   async editNote(path, oldS, newS) {
     const p = safeVaultPath(path, true);
-    const file = this.app.vault.getAbstractFileByPath(p);
-    if (!file || !(file instanceof import_obsidian4.TFile)) return `Note not found: ${p}`;
-    const content = await this.app.vault.read(file);
+    const file = this.app.vault.getFileByPath(p);
+    if (!file) return `Note not found: ${p}`;
     if (!String(oldS ?? "")) return "old_string cannot be empty.";
+    const content = await this.app.vault.read(file);
     const count = content.split(oldS).length - 1;
     if (count === 0) return `old_string not found in ${p}`;
     if (count > 1) return `old_string is not unique in ${p} (found ${count} matches)`;
     const backup = await createSafetyBackup(this.app, file, "edit");
-    await this.app.vault.modify(file, content.replace(oldS, String(newS ?? "")));
+    await this.app.vault.process(file, (data) => data.replace(oldS, String(newS ?? "")));
     return `Edited ${p}
 Safety backup: ${backup}`;
   }
   async appendNote(path, content) {
     const p = safeVaultPath(path, true);
-    const file = this.app.vault.getAbstractFileByPath(p);
-    if (!file || !(file instanceof import_obsidian4.TFile)) return `Note not found: ${p}`;
-    const existing = await this.app.vault.read(file);
+    const file = this.app.vault.getFileByPath(p);
+    if (!file) return `Note not found: ${p}`;
     const backup = await createSafetyBackup(this.app, file, "append");
-    await this.app.vault.modify(file, existing + "\n" + String(content ?? ""));
+    await this.app.vault.process(file, (data) => data + "\n" + String(content ?? ""));
     return `Appended to ${p}
 Safety backup: ${backup}`;
   }
@@ -2319,9 +2342,9 @@ Safety backup: ${backup}`;
     const root = this.app.vault.getRoot();
     let base = root;
     if (folder && folder !== "vault") {
-      const f = this.app.vault.getAbstractFileByPath(safeVaultPath(folder));
-      if (f instanceof import_obsidian4.TFolder) base = f;
-      else return `Folder not found: ${folder}`;
+      const f = this.app.vault.getFolderByPath(safeVaultPath(folder));
+      if (!f) return `Folder not found: ${folder}`;
+      base = f;
     }
     const out = [];
     VaultWalker(base, (file) => {
@@ -2337,9 +2360,9 @@ Safety backup: ${backup}`;
 ${head}`;
   }
   async getNoteImages(path) {
-    const file = this.app.vault.getAbstractFileByPath(safeVaultPath(path));
-    if (!file || !(file instanceof import_obsidian4.TFile)) return `Note not found: ${path}`;
-    const content = await this.app.vault.read(file);
+    const file = this.app.vault.getFileByPath(safeVaultPath(path));
+    if (!file) return `Note not found: ${path}`;
+    const content = await this.app.vault.cachedRead(file);
     const emb = [];
     let embMatch;
     const embRe = /!\[\[([^\]]+\.(png|jpg|jpeg|gif|webp|bmp))\]\]/gi;
@@ -2352,8 +2375,8 @@ ${head}`;
     const out = [];
     for (const name of names) {
       const imgPath = safeVaultPath(resolveSibling(file, name));
-      const imgFile = this.app.vault.getAbstractFileByPath(imgPath);
-      if (imgFile instanceof import_obsidian4.TFile) {
+      const imgFile = this.app.vault.getFileByPath(imgPath);
+      if (imgFile) {
         const buf = await this.app.vault.readBinary(imgFile);
         const mime = mimeFromName(name);
         const b64 = arrayBufferToBase64(buf);
@@ -2366,19 +2389,19 @@ ${head}`;
   }
   async currentNote() {
     const capturedPath = this.accessScope.notePath;
-    const active = capturedPath ? this.app.vault.getAbstractFileByPath(capturedPath) : this.app.workspace.getActiveFile();
-    if (!(active instanceof import_obsidian4.TFile)) return "No note available in the selected context.";
+    const active = capturedPath ? this.app.vault.getFileByPath(capturedPath) : this.app.workspace.getActiveFile();
+    if (!active) return "No note available in the selected context.";
     if (!this.isPathAllowed(active.path)) throw new Error("Access denied: active note is outside the selected context.");
-    const content = await this.app.vault.read(active);
+    const content = await this.app.vault.cachedRead(active);
     return `Current note path: ${active.path}
 
 ${content}`;
   }
   async readNoteSection(path, heading) {
     const p = safeVaultPath(path, true);
-    const file = this.app.vault.getAbstractFileByPath(p);
-    if (!(file instanceof import_obsidian4.TFile)) return `Note not found: ${p}`;
-    const content = await this.app.vault.read(file);
+    const file = this.app.vault.getFileByPath(p);
+    if (!file) return `Note not found: ${p}`;
+    const content = await this.app.vault.cachedRead(file);
     const wanted = String(heading ?? "").replace(/^#+\s*/, "").trim().toLowerCase();
     if (!wanted) return "Heading is required.";
     const lines = content.split("\n");
@@ -2405,8 +2428,8 @@ ${content}`;
   }
   noteMetadata(path) {
     const p = safeVaultPath(path, true);
-    const file = this.app.vault.getAbstractFileByPath(p);
-    if (!(file instanceof import_obsidian4.TFile)) return `Note not found: ${p}`;
+    const file = this.app.vault.getFileByPath(p);
+    if (!file) return `Note not found: ${p}`;
     const cache = this.app.metadataCache.getFileCache(file) ?? {};
     const tags = Array.from(/* @__PURE__ */ new Set([
       ...(cache.tags ?? []).map((t) => t.tag),
@@ -2425,8 +2448,8 @@ ${content}`;
   }
   noteLinks(path) {
     const p = safeVaultPath(path, true);
-    const file = this.app.vault.getAbstractFileByPath(p);
-    if (!(file instanceof import_obsidian4.TFile)) return `Note not found: ${p}`;
+    const file = this.app.vault.getFileByPath(p);
+    if (!file) return `Note not found: ${p}`;
     const cache = this.app.metadataCache.getFileCache(file) ?? {};
     const outgoing = (cache.links ?? []).map((l) => l.link);
     const embeds = (cache.embeds ?? []).map((l) => l.link);
@@ -2441,8 +2464,8 @@ ${content}`;
     let base = this.app.vault.getRoot();
     if (folder && folder !== "vault") {
       const p = safeVaultPath(folder);
-      const found = this.app.vault.getAbstractFileByPath(p);
-      if (!(found instanceof import_obsidian4.TFolder)) return `Folder not found: ${p}`;
+      const found = this.app.vault.getFolderByPath(p);
+      if (!found) return `Folder not found: ${p}`;
       base = found;
     }
     const out = [];
@@ -2469,8 +2492,8 @@ ${content}`;
   async moveNote(path, destination) {
     const from = safeVaultPath(path, true);
     const to = safeVaultPath(destination, true);
-    const file = this.app.vault.getAbstractFileByPath(from);
-    if (!(file instanceof import_obsidian4.TFile)) return `Note not found: ${from}`;
+    const file = this.app.vault.getFileByPath(from);
+    if (!file) return `Note not found: ${from}`;
     if (this.app.vault.getAbstractFileByPath(to)) return `Destination already exists: ${to}`;
     const backup = await createSafetyBackup(this.app, file, "move");
     await ensureParentFolder(this.app, to);
@@ -2480,8 +2503,8 @@ Safety backup: ${backup}`;
   }
   async trashNote(path) {
     const p = safeVaultPath(path, true);
-    const file = this.app.vault.getAbstractFileByPath(p);
-    if (!(file instanceof import_obsidian4.TFile)) return `Note not found: ${p}`;
+    const file = this.app.vault.getFileByPath(p);
+    if (!file) return `Note not found: ${p}`;
     const backup = await createSafetyBackup(this.app, file, "trash");
     await this.app.fileManager.trashFile(file);
     return `Moved ${p} to Obsidian Trash (recoverable).
@@ -2584,9 +2607,9 @@ Safety backup: ${backup}`;
     const root = this.app.vault.getRoot();
     let base = root;
     if (folder && folder !== "vault") {
-      const f = this.app.vault.getAbstractFileByPath(safeVaultPath(folder));
-      if (f instanceof import_obsidian4.TFolder) base = f;
-      else return `Folder not found: ${folder}`;
+      const f = this.app.vault.getFolderByPath(safeVaultPath(folder));
+      if (!f) return `Folder not found: ${folder}`;
+      base = f;
     }
     const q = String(query ?? "").toLowerCase().trim();
     const out = [];
@@ -3039,7 +3062,6 @@ var FloatingChatPanel = class {
     controls.addClass("agenter-controls");
     const stopBtn = mkIconBtn("square", "Stop generating", () => this.abort());
     stopBtn.addClass("agenter-stop");
-    stopBtn.setCssStyles({ display: "none" });
     const newBtn = mkIconBtn("plus", "New chat", () => this.newSession());
     const floatBtn = mkIconBtn(
       this.mode === "docked" ? "maximize-2" : "panel-right",
@@ -3275,7 +3297,6 @@ var FloatingChatPanel = class {
     composer.appendChild(contextRow);
     const attachmentStrip = document.createElement("div");
     attachmentStrip.addClass("agenter-attachment-strip");
-    attachmentStrip.setCssStyles({ display: "none" });
     this.attachmentStripEl = attachmentStrip;
     composer.appendChild(attachmentStrip);
     const input = document.createElement("textarea");
@@ -3628,11 +3649,8 @@ ${text}` : text;
   }
   renderPendingAttachments() {
     this.attachmentStripEl.empty();
-    if (!this.pendingParts.length) {
-      this.attachmentStripEl.setCssStyles({ display: "none" });
-      return;
-    }
-    this.attachmentStripEl.setCssStyles({ display: "flex" });
+    this.attachmentStripEl.toggleClass("has-items", this.pendingParts.length > 0);
+    if (!this.pendingParts.length) return;
     for (const part of this.pendingParts) {
       const chip = this.attachmentStripEl.createDiv({ cls: "agenter-attachment-chip" });
       const icon = chip.createSpan({ cls: "agenter-attachment-icon" });
@@ -4276,7 +4294,7 @@ ${effectiveText}` : effectiveText;
       typing.addClass("has-reasoning", "is-reasoning-complete", "is-reasoning-collapsed");
       const elapsed = reasoningStartedAt ? Math.max(0.1, (Date.now() - reasoningStartedAt) / 1e3) : 0;
       if (reasoningLabel) reasoningLabel.textContent = elapsed ? `Thought for ${elapsed.toFixed(elapsed < 10 ? 1 : 0)}s` : "Reasoning complete";
-      if (reasoningDots) reasoningDots.setCssStyles({ display: "none" });
+      reasoningDots?.addClass("is-hidden");
       if (reasoningChevron) safeIcon(reasoningChevron, "chevron-down");
     };
     const appendReasoning = (token) => {
@@ -4401,7 +4419,7 @@ ${effectiveText}` : effectiveText;
   toggleStop(show) {
     const header = this.rootEl.querySelector(".agenter-header");
     const stop = header?._stopBtn;
-    if (stop) stop.setCssStyles({ display: show ? "flex" : "none" });
+    stop?.toggleClass("is-visible", show);
   }
   // ------------------------------------------------------------ context
   buildAccessScope() {
@@ -4587,7 +4605,7 @@ function safeIcon(el, icon, fallback = "\u2022") {
   el.empty();
   if (!path) {
     el.setText(fallback);
-    el.setCssStyles({ fontSize: "16px", lineHeight: "1" });
+    el.addClass("agenter-icon-fallback");
     return;
   }
   const NS = "http://www.w3.org/2000/svg";
@@ -4634,8 +4652,478 @@ function truncate(s, n) {
   return s.length > n ? s.slice(0, n) + "\u2026" : s;
 }
 
-// src/cloudflare-oauth.ts
+// src/selection-popover.ts
 var import_obsidian6 = require("obsidian");
+var EDGE_GAP = 10;
+var CARET_GAP = 8;
+var QUICK_ACTIONS = [
+  ["Summarize", "list", "Summarize this selection clearly in concise bullet points."],
+  ["Explain", "help-circle", "Explain this selection simply, preserving important details."],
+  ["Rewrite", "pencil", "Rewrite this selection to be clearer and more polished."],
+  ["Translate", "languages", "Translate this selection. Infer the most useful target language from the current text and conversation."],
+  ["Proofread", "spell-check", "Fix grammar, spelling, punctuation, and readability without changing the meaning."],
+  ["To tasks", "list-checks", "Convert this selection into a practical Markdown checklist."]
+];
+var _SelectionPopover = class _SelectionPopover {
+  constructor(plugin, selection, caret) {
+    this.plugin = plugin;
+    this.selection = selection;
+    this.caret = caret;
+    this.component = new import_obsidian6.Component();
+    this.cleanups = [];
+    this.busy = false;
+    this.closed = false;
+    this.chatting = false;
+    this.hydrated = false;
+    this.hasSelectionContext = false;
+    this.renderTimer = null;
+    _SelectionPopover.closeCurrent();
+    _SelectionPopover.current = this;
+    this.app = plugin.app;
+    this.component.load();
+    this.sourcePath = this.app.workspace.getActiveFile()?.path ?? "";
+    this.orchestrator = new AgentOrchestrator(this.app, plugin.settings);
+    this.orchestrator.setAccessScope({
+      mode: this.sourcePath ? "note" : "none",
+      notePath: this.sourcePath || void 0,
+      folderPath: this.sourcePath.includes("/") ? this.sourcePath.slice(0, this.sourcePath.lastIndexOf("/")) : ""
+    });
+    const session = getActiveSession(plugin.settings);
+    this.orchestrator.setMessages(
+      session.messages.filter((m) => m.role === "user" || m.role === "assistant").map((m) => ({ role: m.role, content: m.content }))
+    );
+    const root = createDiv({ cls: "agenter-ctx" });
+    this.rootEl = root;
+    root.setAttribute("role", "dialog");
+    root.setAttribute("aria-label", "Agenter contextual chat");
+    const head = root.createDiv({ cls: "agenter-ctx-head" });
+    const mark = head.createSpan({ cls: "agenter-ctx-mark" });
+    (0, import_obsidian6.setIcon)(mark, "sparkles");
+    const words = this.selection.trim().split(/\s+/).filter(Boolean).length;
+    this.countEl = head.createEl("button", {
+      cls: "agenter-ctx-count",
+      text: `${words} ${words === 1 ? "word" : "words"} selected`,
+      attr: { type: "button", "aria-expanded": "false" }
+    });
+    this.countEl.title = "Show the selected text";
+    this.countEl.addEventListener("click", () => this.toggleQuote());
+    const pinBtn = head.createEl("button", {
+      cls: "agenter-ctx-icon",
+      attr: { type: "button", "aria-label": "Pin this spot" }
+    });
+    this.renderPinButton(pinBtn);
+    pinBtn.addEventListener("click", () => this.togglePinned(pinBtn));
+    const mainBtn = head.createEl("button", {
+      cls: "agenter-ctx-icon",
+      attr: { type: "button", "aria-label": "Continue in the main panel" }
+    });
+    (0, import_obsidian6.setIcon)(mainBtn, "panel-right");
+    mainBtn.addEventListener("click", () => void this.handOff());
+    const closeBtn = head.createEl("button", {
+      cls: "agenter-ctx-icon",
+      attr: { type: "button", "aria-label": "Close" }
+    });
+    (0, import_obsidian6.setIcon)(closeBtn, "x");
+    closeBtn.addEventListener("click", () => this.close());
+    this.quoteEl = root.createDiv({ cls: "agenter-ctx-quote" });
+    this.logEl = root.createDiv({ cls: "agenter-ctx-log" });
+    this.actionsEl = root.createDiv({ cls: "agenter-ctx-actions" });
+    this.buildActions();
+    const composer = root.createDiv({ cls: "agenter-ctx-composer" });
+    this.inputEl = composer.createEl("textarea", {
+      cls: "agenter-ctx-input",
+      attr: { rows: "1", placeholder: "Ask about the selection\u2026" }
+    });
+    this.sendBtn = composer.createEl("button", {
+      cls: "agenter-ctx-send",
+      attr: { type: "button", "aria-label": "Send" }
+    });
+    (0, import_obsidian6.setIcon)(this.sendBtn, "arrow-up");
+    this.sendBtn.addEventListener("click", () => void this.run(this.inputEl.value));
+    this.inputEl.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" && !e.shiftKey) {
+        e.preventDefault();
+        void this.run(this.inputEl.value);
+      }
+      if (e.key === "Escape") this.close();
+    });
+    this.inputEl.addEventListener("input", () => this.autoGrowInput());
+    document.body.appendChild(root);
+    this.makeDraggable(head);
+    this.place();
+    const onResize = () => this.place();
+    window.addEventListener("resize", onResize);
+    this.cleanups.push(() => window.removeEventListener("resize", onResize));
+    const onPointerDown = (ev) => {
+      if (!root.contains(ev.target)) this.close();
+    };
+    const armTimer = window.setTimeout(
+      () => document.addEventListener("mousedown", onPointerDown, true),
+      0
+    );
+    this.cleanups.push(() => {
+      window.clearTimeout(armTimer);
+      document.removeEventListener("mousedown", onPointerDown, true);
+    });
+  }
+  /** Closes whatever contextual popover is on screen, if any. */
+  static closeCurrent() {
+    _SelectionPopover.current?.close();
+  }
+  static isOpen() {
+    return _SelectionPopover.current !== null;
+  }
+  // ============================================================ layout
+  /** Places the popover either beside the caret or on the pinned spot. */
+  place() {
+    if (this.closed) return;
+    const rect = this.rootEl.getBoundingClientRect();
+    const maxLeft = Math.max(EDGE_GAP, window.innerWidth - rect.width - EDGE_GAP);
+    const maxTop = Math.max(EDGE_GAP, window.innerHeight - rect.height - EDGE_GAP);
+    let left;
+    let top;
+    if (this.plugin.settings.contextualAnchor === "pinned" || !this.caret) {
+      const pinned = this.pinnedPoint(rect);
+      left = pinned.x;
+      top = pinned.y;
+    } else {
+      left = this.caret.x + CARET_GAP;
+      top = this.caret.y + CARET_GAP;
+      if (top > maxTop) top = Math.max(EDGE_GAP, this.caret.y - rect.height - CARET_GAP);
+    }
+    this.rootEl.style.setProperty("--agenter-ctx-left", `${clamp(left, EDGE_GAP, maxLeft)}px`);
+    this.rootEl.style.setProperty("--agenter-ctx-top", `${clamp(top, EDGE_GAP, maxTop)}px`);
+  }
+  /** The saved spot, defaulting to the bottom-right corner on first use. */
+  pinnedPoint(rect) {
+    const saved = this.plugin.settings.contextualPinned;
+    if (saved && Number.isFinite(saved.x) && Number.isFinite(saved.y)) return saved;
+    return {
+      x: window.innerWidth - rect.width - 24,
+      y: window.innerHeight - rect.height - 72
+    };
+  }
+  /** Dragging the header moves the popover and remembers where it landed. */
+  makeDraggable(handle) {
+    handle.addClass("agenter-ctx-drag");
+    const onDown = (ev) => {
+      if (ev.button !== 0) return;
+      if (ev.target.closest("button")) return;
+      const rect = this.rootEl.getBoundingClientRect();
+      const offsetX = ev.clientX - rect.left;
+      const offsetY = ev.clientY - rect.top;
+      let moved = false;
+      ev.preventDefault();
+      const onMove = (move) => {
+        moved = true;
+        this.rootEl.addClass("is-dragging");
+        const width = this.rootEl.offsetWidth;
+        const height = this.rootEl.offsetHeight;
+        const x = clamp(move.clientX - offsetX, EDGE_GAP, Math.max(EDGE_GAP, window.innerWidth - width - EDGE_GAP));
+        const y = clamp(move.clientY - offsetY, EDGE_GAP, Math.max(EDGE_GAP, window.innerHeight - height - EDGE_GAP));
+        this.rootEl.style.setProperty("--agenter-ctx-left", `${x}px`);
+        this.rootEl.style.setProperty("--agenter-ctx-top", `${y}px`);
+      };
+      const onUp = () => {
+        document.removeEventListener("mousemove", onMove);
+        document.removeEventListener("mouseup", onUp);
+        this.rootEl.removeClass("is-dragging");
+        if (!moved) return;
+        const dropped = this.rootEl.getBoundingClientRect();
+        this.plugin.settings.contextualAnchor = "pinned";
+        this.plugin.settings.contextualPinned = { x: dropped.left, y: dropped.top };
+        void this.plugin.saveSettings();
+        this.rootEl.querySelectorAll(".agenter-ctx-icon[data-agenter-pin]").forEach((btn) => this.renderPinButton(btn));
+      };
+      document.addEventListener("mousemove", onMove);
+      document.addEventListener("mouseup", onUp);
+    };
+    handle.addEventListener("mousedown", onDown);
+  }
+  renderPinButton(btn) {
+    const pinned = this.plugin.settings.contextualAnchor === "pinned";
+    btn.dataset.agenterPin = "1";
+    btn.toggleClass("is-active", pinned);
+    (0, import_obsidian6.setIcon)(btn, pinned ? "pin" : "pin-off");
+    btn.setAttribute(
+      "aria-label",
+      pinned ? "Pinned \u2014 click to follow the selection" : "Follow selection \u2014 click to pin here"
+    );
+    btn.title = btn.getAttribute("aria-label") ?? "";
+  }
+  async togglePinned(btn) {
+    const settings = this.plugin.settings;
+    if (settings.contextualAnchor === "pinned") {
+      settings.contextualAnchor = "selection";
+    } else {
+      settings.contextualAnchor = "pinned";
+      const rect = this.rootEl.getBoundingClientRect();
+      settings.contextualPinned = { x: rect.left, y: rect.top };
+    }
+    await this.plugin.saveSettings();
+    this.renderPinButton(btn);
+    this.place();
+  }
+  // =========================================================== sections
+  buildActions() {
+    for (const [label, icon, instruction] of QUICK_ACTIONS) {
+      const btn = this.actionsEl.createEl("button", {
+        cls: "agenter-ctx-chip",
+        attr: { type: "button" }
+      });
+      const glyph = btn.createSpan({ cls: "agenter-ctx-chip-icon" });
+      (0, import_obsidian6.setIcon)(glyph, icon);
+      btn.createSpan({ text: label });
+      btn.addEventListener("click", () => void this.run(instruction));
+    }
+    for (const [key, template] of Object.entries(this.plugin.settings.customPrompts ?? {}).slice(0, 6)) {
+      const btn = this.actionsEl.createEl("button", {
+        cls: "agenter-ctx-chip is-custom",
+        attr: { type: "button" }
+      });
+      const glyph = btn.createSpan({ cls: "agenter-ctx-chip-icon" });
+      (0, import_obsidian6.setIcon)(glyph, "wand");
+      btn.createSpan({ text: key.replace(/[-_]/g, " ") });
+      btn.title = String(template);
+      btn.addEventListener("click", () => {
+        const tmpl = String(template);
+        void this.run(
+          tmpl.includes("{{selection}}") ? tmpl.replace(/\{\{\s*selection\s*\}\}/g, this.selection) : tmpl
+        );
+      });
+    }
+  }
+  toggleQuote() {
+    const open = !this.rootEl.hasClass("is-quoting");
+    this.rootEl.toggleClass("is-quoting", open);
+    this.countEl.setAttribute("aria-expanded", String(open));
+    if (open && !this.quoteEl.hasChildNodes()) this.renderMarkdown(this.selection, this.quoteEl);
+    window.requestAnimationFrame(() => this.place());
+  }
+  autoGrowInput() {
+    this.inputEl.style.setProperty("height", "auto");
+    const next = Math.min(this.inputEl.scrollHeight, 132);
+    this.inputEl.style.setProperty("height", `${next}px`);
+  }
+  renderMarkdown(text, target) {
+    target.empty();
+    target.addClass("markdown-rendered");
+    target.dir = /[֐-ࣿ]/.test(text) ? "rtl" : "ltr";
+    import_obsidian6.MarkdownRenderer.render(this.app, text, target, this.sourcePath, this.component).catch(() => {
+      target.setText(text);
+    });
+  }
+  addRow(role, text) {
+    const row = this.logEl.createDiv({ cls: `agenter-ctx-row is-${role}` });
+    if (role === "status") row.setText(text);
+    else this.renderMarkdown(text, row);
+    this.logEl.scrollTop = this.logEl.scrollHeight;
+    return row;
+  }
+  enterChatMode() {
+    if (this.chatting) return;
+    this.chatting = true;
+    this.rootEl.addClass("is-chatting");
+    this.inputEl.placeholder = "Continue here\u2026";
+    if (!this.hydrated) {
+      this.hydrated = true;
+      for (const m of getActiveSession(this.plugin.settings).messages) {
+        if (m.role === "user") this.addRow("user", m.content);
+        else if (m.role === "assistant" && m.content.trim()) this.addRow("assistant", m.content);
+      }
+    }
+    window.requestAnimationFrame(() => this.place());
+  }
+  // ================================================================ run
+  async run(question) {
+    const clean = question.trim();
+    if (!clean || this.busy) return;
+    this.enterChatMode();
+    this.busy = true;
+    this.sendBtn.disabled = true;
+    this.inputEl.value = "";
+    this.autoGrowInput();
+    this.addRow("user", clean);
+    const typing = this.addRow("status", "Thinking\u2026");
+    const prompt = this.hasSelectionContext || clean.includes(this.selection) ? clean : `${clean}
+
+<selected-text>
+${this.selection}
+</selected-text>`;
+    this.hasSelectionContext = true;
+    this.orchestrator.shouldAbort = () => this.closed;
+    let response = "";
+    let responseEl = null;
+    let reasoningEl = null;
+    let reasoningText = "";
+    const flush = () => {
+      if (responseEl) this.renderMarkdown(response, responseEl);
+      this.logEl.scrollTop = this.logEl.scrollHeight;
+    };
+    const callbacks = {
+      onReasoningToken: (token) => {
+        typing.remove();
+        if (!reasoningEl) {
+          reasoningEl = this.addRow("status", "");
+          reasoningEl.addClass("is-reasoning");
+        }
+        reasoningText += token;
+        reasoningEl.setText(reasoningText);
+        this.logEl.scrollTop = this.logEl.scrollHeight;
+      },
+      onAssistantToken: (token) => {
+        reasoningEl?.addClass("is-complete");
+        typing.remove();
+        if (!responseEl) responseEl = this.addRow("assistant", "");
+        response += token;
+        if (this.renderTimer === null) {
+          this.renderTimer = window.setTimeout(() => {
+            this.renderTimer = null;
+            flush();
+          }, 70);
+        }
+      },
+      onToolUse: (name) => {
+        typing.remove();
+        this.addRow("status", `Using ${name}\u2026`);
+      },
+      onToolResult: () => {
+      },
+      onAccessRequest: (request) => this.requestApproval(
+        `Allow ${request.requestedMode} access for this run${request.targetPath ? `: ${request.targetPath}` : ""}`,
+        false
+      ),
+      onApprovalRequest: (call) => {
+        let args = {};
+        try {
+          args = JSON.parse(call.arguments || "{}");
+        } catch {
+        }
+        const verb = call.name.replace(/[-_]/g, " ");
+        const path = typeof args.path === "string" ? args.path : "";
+        return this.requestApproval(path ? `${verb}: ${path}` : verb, call.name === "trash_note");
+      },
+      onError: (error) => {
+        typing.remove();
+        this.addRow("status", `Error: ${error}`).addClass("is-error");
+      },
+      onDone: () => {
+        if (this.renderTimer !== null) {
+          window.clearTimeout(this.renderTimer);
+          this.renderTimer = null;
+        }
+        typing.remove();
+        flush();
+        this.busy = false;
+        this.sendBtn.disabled = false;
+        if (!this.closed) this.inputEl.focus();
+        void this.persist();
+        window.requestAnimationFrame(() => this.place());
+      }
+    };
+    await this.orchestrator.run(prompt, callbacks);
+  }
+  /** Inline Approve / Reject card; deletions need a second, deliberate click. */
+  requestApproval(label, destructive) {
+    return new Promise((resolve) => {
+      const card = this.logEl.createDiv({ cls: "agenter-ctx-approval" });
+      if (destructive) card.addClass("is-destructive");
+      card.createDiv({ cls: "agenter-ctx-approval-label", text: label });
+      const row = card.createDiv({ cls: "agenter-ctx-approval-actions" });
+      const reject = row.createEl("button", { text: "Reject", attr: { type: "button" } });
+      const approve = row.createEl("button", {
+        cls: "is-primary",
+        text: destructive ? "Review deletion" : "Approve",
+        attr: { type: "button" }
+      });
+      this.logEl.scrollTop = this.logEl.scrollHeight;
+      window.requestAnimationFrame(() => this.place());
+      const settle = (ok) => {
+        row.remove();
+        card.createDiv({
+          cls: `agenter-ctx-approval-status ${ok ? "is-approved" : "is-rejected"}`,
+          text: ok ? "Approved" : "Rejected"
+        });
+        resolve(ok);
+      };
+      let armed = false;
+      let armTimer = null;
+      approve.addEventListener("click", () => {
+        if (!destructive) return settle(true);
+        if (!armed) {
+          armed = true;
+          approve.setText("Click again: move to Trash");
+          armTimer = window.setTimeout(() => {
+            armed = false;
+            approve.setText("Review deletion");
+          }, 6e3);
+          return;
+        }
+        if (armTimer !== null) window.clearTimeout(armTimer);
+        settle(true);
+      });
+      reject.addEventListener("click", () => settle(false));
+    });
+  }
+  // ========================================================= plumbing
+  /** Writes the contextual turns back into the shared session. */
+  async persist() {
+    const session = getActiveSession(this.plugin.settings);
+    const stored = [];
+    for (const m of this.orchestrator.messages) {
+      if (m.role === "user") stored.push({ role: "user", content: m.content ?? "" });
+      else if (m.role === "assistant" && (m.content ?? "").trim())
+        stored.push({ role: "assistant", content: m.content ?? "" });
+      else if (m.role === "tool")
+        stored.push({ role: "tool", content: m.content ?? "", toolName: m.tool_name });
+    }
+    if (!stored.length) return;
+    session.messages = stored.slice(-200);
+    session.updatedAt = Date.now();
+    if (session.title === "New chat") session.title = deriveTitle(session.messages);
+    await this.plugin.saveSettings();
+    this.plugin.activeChatPanel?.reloadActiveSession();
+  }
+  /**
+   * Moves the work to the docked panel. An untouched popover hands over the
+   * selection itself; one that already has a conversation hands over that.
+   */
+  async handOff() {
+    const started = this.chatting;
+    if (started) await this.persist();
+    this.close();
+    await this.plugin.ensureChatOpen();
+    if (started) this.plugin.activeChatPanel?.reloadActiveSession();
+    else this.plugin.activeChatPanel?.insertPromptFromOutside(this.selection);
+  }
+  focus() {
+    this.inputEl.focus();
+  }
+  close() {
+    if (this.closed) return;
+    this.closed = true;
+    if (_SelectionPopover.current === this) _SelectionPopover.current = null;
+    if (this.renderTimer !== null) window.clearTimeout(this.renderTimer);
+    for (const cleanup of this.cleanups) cleanup();
+    this.component.unload();
+    this.rootEl.remove();
+  }
+};
+_SelectionPopover.current = null;
+var SelectionPopover = _SelectionPopover;
+function clamp(value, min, max) {
+  return Math.min(Math.max(value, min), max);
+}
+function openSelectionPopover(plugin, selection, caret) {
+  if (!selection.trim()) {
+    new import_obsidian6.Notice("Select some text first.");
+    return null;
+  }
+  return new SelectionPopover(plugin, selection.trim(), caret);
+}
+
+// src/cloudflare-oauth.ts
+var import_obsidian7 = require("obsidian");
 var import_electron = require("electron");
 var import_http2 = require("http");
 var import_crypto = require("crypto");
@@ -4711,7 +5199,7 @@ function waitForAuthorization(expectedState) {
 }
 async function tokenRequest(params) {
   const body = new URLSearchParams(params).toString();
-  const response = await (0, import_obsidian6.requestUrl)({
+  const response = await (0, import_obsidian7.requestUrl)({
     url: CLOUDFLARE_OAUTH_TOKEN,
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded", Accept: "application/json" },
@@ -4768,10 +5256,10 @@ async function refreshCloudflareOAuth(clientId, refreshToken) {
 }
 async function revokeCloudflareOAuth(clientId, token) {
   const body = new URLSearchParams({ client_id: clientId.trim(), token }).toString();
-  await (0, import_obsidian6.requestUrl)({ url: CLOUDFLARE_OAUTH_REVOKE, method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body });
+  await (0, import_obsidian7.requestUrl)({ url: CLOUDFLARE_OAUTH_REVOKE, method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body });
 }
 async function listCloudflareAccounts(accessToken) {
-  const response = await (0, import_obsidian6.requestUrl)({ url: "https://api.cloudflare.com/client/v4/accounts?per_page=50", method: "GET", headers: { Authorization: `Bearer ${accessToken}` } });
+  const response = await (0, import_obsidian7.requestUrl)({ url: "https://api.cloudflare.com/client/v4/accounts?per_page=50", method: "GET", headers: { Authorization: `Bearer ${accessToken}` } });
   if (response.status === 401) throw new Error("Cloudflare issued an unusable OAuth token. Reconnect after correcting the OAuth client configuration.");
   if (response.status === 403) throw new Error("Cloudflare approved the login but granted no account permission. Edit the OAuth client and add Account Settings Read, Workers AI Read, and Workers AI Edit, then reconnect.");
   if (response.status >= 400) throw new Error(`Could not load Cloudflare accounts (${response.status}). Ensure the OAuth client includes Account Settings Read.`);
@@ -4781,32 +5269,7 @@ async function listCloudflareAccounts(accessToken) {
 
 // main.ts
 var AGENTER_VIEW_TYPE = "agenter-chat-view";
-function safeIconHtml(el, icon) {
-  const paths = {
-    sparkles: "M12 3l1.7 5.2L19 10l-5.3 1.8L12 17l-1.7-5.2L5 10l5.3-1.8z",
-    x: "M6 6l12 12M18 6L6 18"
-  };
-  el.empty();
-  const d = paths[icon];
-  if (!d) {
-    el.setText("\u2022");
-    return;
-  }
-  const NS = "http://www.w3.org/2000/svg";
-  const svg = document.createElementNS(NS, "svg");
-  svg.setAttribute("viewBox", "0 0 24 24");
-  svg.setAttribute("aria-hidden", "true");
-  svg.setAttribute("fill", "none");
-  svg.setAttribute("stroke", "currentColor");
-  svg.setAttribute("stroke-width", "1.8");
-  svg.setAttribute("stroke-linecap", "round");
-  svg.setAttribute("stroke-linejoin", "round");
-  const p = document.createElementNS(NS, "path");
-  p.setAttribute("d", d);
-  svg.appendChild(p);
-  el.appendChild(svg);
-}
-var AgenterChatView = class extends import_obsidian7.ItemView {
+var AgenterChatView = class extends import_obsidian8.ItemView {
   constructor(leaf, plugin) {
     super(leaf);
     this.plugin = plugin;
@@ -4841,11 +5304,10 @@ var AgenterChatView = class extends import_obsidian7.ItemView {
     this.contentEl.removeClass("agenter-view-content");
   }
 };
-var AgenterPlugin = class extends import_obsidian7.Plugin {
+var AgenterPlugin = class extends import_obsidian8.Plugin {
   constructor() {
     super(...arguments);
     this.activeChatPanel = null;
-    this.pendingPrompt = "";
     this.floatingPanel = null;
     this.selectionTimer = null;
   }
@@ -4881,7 +5343,7 @@ var AgenterPlugin = class extends import_obsidian7.Plugin {
         if (sel && sel.trim()) {
           this.showSelectionAI(editor, sel.trim());
         } else {
-          new import_obsidian7.Notice("Select some text first.");
+          new import_obsidian8.Notice("Select some text first.");
         }
       }
     });
@@ -4905,6 +5367,8 @@ var AgenterPlugin = class extends import_obsidian7.Plugin {
     if (this.settings.cloudflareAutoSync) void this.syncCloudflareCatalogs(false);
   }
   onunload() {
+    if (this.selectionTimer !== null) window.clearTimeout(this.selectionTimer);
+    SelectionPopover.closeCurrent();
     this.closeFloatingPanel();
   }
   async togglePanel() {
@@ -4987,7 +5451,7 @@ var AgenterPlugin = class extends import_obsidian7.Plugin {
     provider.lastConnectionError = "";
     await this.saveSettings();
     await this.syncCloudflareCatalogs(false);
-    new import_obsidian7.Notice(`Cloudflare connected: ${accounts[0].name}`);
+    new import_obsidian8.Notice(`Cloudflare connected: ${accounts[0].name}`);
   }
   async disconnectCloudflare(providerId) {
     const provider = this.settings.providers.find((p) => p.id === providerId);
@@ -5036,11 +5500,11 @@ var AgenterPlugin = class extends import_obsidian7.Plugin {
           models: this.settings.modelCatalogs[provider.id]?.models ?? [],
           error: provider.lastConnectionError
         };
-        if (showNotice) new import_obsidian7.Notice(`Cloudflare sync failed: ${provider.lastConnectionError}`);
+        if (showNotice) new import_obsidian8.Notice(`Cloudflare sync failed: ${provider.lastConnectionError}`);
       }
     }
     await this.saveSettings();
-    if (showNotice) new import_obsidian7.Notice("Cloudflare model catalog synced.");
+    if (showNotice) new import_obsidian8.Notice("Cloudflare model catalog synced.");
     this.activeChatPanel?.refreshProviderLabel();
   }
   async openDockedChat() {
@@ -5049,7 +5513,7 @@ var AgenterPlugin = class extends import_obsidian7.Plugin {
     if (!leaf) {
       leaf = this.app.workspace.getRightLeaf(false);
       if (!leaf) {
-        new import_obsidian7.Notice("Agenter could not open the right sidebar.");
+        new import_obsidian8.Notice("Agenter could not open the right sidebar.");
         return;
       }
       await leaf.setViewState({ type: AGENTER_VIEW_TYPE, active: true });
@@ -5078,381 +5542,41 @@ var AgenterPlugin = class extends import_obsidian7.Plugin {
     this.closeFloatingPanel();
     this.app.workspace.detachLeavesOfType(AGENTER_VIEW_TYPE);
   }
+  /**
+   * Debounced so a drag-select fires once, when the pointer settles, rather
+   * than on every intermediate mouseup.
+   */
   scheduleSelectionAI(event) {
+    if (!this.settings.contextualAutoShow) return;
     const target = event.target;
-    if (target?.closest?.(".agenter-root, .agenter-selection-popover, .menu, .modal-container")) return;
+    if (target?.closest?.(".agenter-root, .agenter-ctx, .menu, .modal-container")) return;
     if (this.selectionTimer !== null) window.clearTimeout(this.selectionTimer);
     this.selectionTimer = window.setTimeout(() => {
       this.selectionTimer = null;
-      const view = this.app.workspace.getActiveViewOfType(import_obsidian7.MarkdownView);
-      const editor = view?.editor;
-      const selection = editor?.getSelection?.()?.trim?.() ?? "";
+      const editor = this.app.workspace.getActiveViewOfType(import_obsidian8.MarkdownView)?.editor;
+      const selection = editor?.getSelection?.().trim() ?? "";
       if (!selection) {
-        document.querySelector(".agenter-selection-popover")?.remove();
+        SelectionPopover.closeCurrent();
         return;
       }
-      const cursor = editor.cursorCoords?.("to") ?? editor.cursorCoords?.();
-      const point = {
-        x: cursor?.left ?? (event instanceof MouseEvent ? event.clientX : window.innerWidth / 2),
-        y: cursor?.bottom ?? (event instanceof MouseEvent ? event.clientY : window.innerHeight / 2)
-      };
-      this.showSelectionAI(editor, selection, point);
+      this.showSelectionAI(editor, selection, event, false);
     }, 90);
   }
-  /** Contextual third chat mode: compact, selection-anchored, and self-contained. */
-  showSelectionAI(editor, selection, point) {
-    const cursor = editor.cursorCoords ? editor.cursorCoords("to") : null;
-    const x = point?.x ?? cursor?.left ?? window.innerWidth / 2;
-    const y = point?.y ?? cursor?.bottom ?? window.innerHeight / 2;
-    document.querySelector(".agenter-selection-popover")?.remove();
-    const popover = document.createElement("div");
-    popover.addClass("agenter-selection-popover", "is-contextual");
-    const sourcePath = this.app.workspace.getActiveFile()?.path ?? "";
-    const renderComponent = new import_obsidian7.Component();
-    renderComponent.load();
-    let popoverWasConnected = false;
-    const lifecycleObserver = new MutationObserver(() => {
-      if (popover.isConnected) {
-        popoverWasConnected = true;
-        return;
-      }
-      if (popoverWasConnected) {
-        renderComponent.unload();
-        lifecycleObserver.disconnect();
-      }
-    });
-    lifecycleObserver.observe(document.body, { childList: true, subtree: true });
-    const renderMd = (text, target) => {
-      target.empty();
-      target.addClass("markdown-rendered");
-      target.dir = /[\u0590-\u08FF]/.test(text) ? "rtl" : "ltr";
-      import_obsidian7.MarkdownRenderer.render(this.app, text, target, sourcePath, renderComponent).catch(() => {
-        target.setText(text);
-      });
-    };
-    const position = () => {
-      const rect = popover.getBoundingClientRect();
-      const left = Math.max(8, Math.min(x + 7, window.innerWidth - rect.width - 8));
-      let top = y + 7;
-      if (top + rect.height > window.innerHeight - 8) top = Math.max(8, y - rect.height - 7);
-      popover.style.left = `${left}px`;
-      popover.style.top = `${top}px`;
-    };
-    const head = document.createElement("div");
-    head.addClass("agenter-selection-popover-head");
-    const brand = document.createElement("span");
-    brand.addClass("agenter-selection-brand");
-    safeIconHtml(brand, "sparkles");
-    const title = document.createElement("span");
-    title.textContent = "Agenter";
-    head.append(brand, title);
-    const openMainBtn = document.createElement("button");
-    openMainBtn.addClass("agenter-selection-open-main");
-    openMainBtn.textContent = "Main panel";
-    openMainBtn.setAttribute("aria-label", "Continue this chat in the main panel");
-    openMainBtn.addEventListener("click", () => void openInMain());
-    head.appendChild(openMainBtn);
-    const closeBtn = document.createElement("button");
-    closeBtn.addClass("agenter-selection-popover-close");
-    closeBtn.textContent = "\xD7";
-    closeBtn.setAttribute("aria-label", "Close contextual chat");
-    closeBtn.addEventListener("click", () => popover.remove());
-    head.appendChild(closeBtn);
-    popover.appendChild(head);
-    const previewShell = document.createElement("section");
-    previewShell.addClass("agenter-selection-preview-shell");
-    const previewTop = document.createElement("button");
-    previewTop.addClass("agenter-selection-preview-top");
-    const contextLabel = document.createElement("span");
-    const wordCount = selection.trim().split(/\s+/).filter(Boolean).length;
-    contextLabel.textContent = `${wordCount} words \xB7 ${selection.split("\n").length} lines`;
-    const expandLabel = document.createElement("span");
-    expandLabel.textContent = "Show full";
-    previewTop.append(contextLabel, expandLabel);
-    const preview = document.createElement("div");
-    preview.addClass("agenter-selection-preview", "markdown-rendered");
-    renderMd(selection, preview);
-    previewShell.append(previewTop, preview);
-    previewTop.addEventListener("click", () => {
-      const expanded = !previewShell.hasClass("is-expanded");
-      previewShell.toggleClass("is-expanded", expanded);
-      expandLabel.textContent = expanded ? "Collapse" : "Show full";
-      window.requestAnimationFrame(position);
-    });
-    popover.appendChild(previewShell);
-    const chatLog = document.createElement("div");
-    chatLog.addClass("agenter-selection-chat-log");
-    popover.appendChild(chatLog);
-    const actionRow = document.createElement("div");
-    actionRow.addClass("agenter-selection-primary-actions");
-    const insert = document.createElement("button");
-    insert.textContent = "Send to main chat";
-    insert.addEventListener("click", async () => {
-      popover.remove();
-      await this.ensureChatOpen();
-      this.activeChatPanel?.insertPromptFromOutside(selection);
-    });
-    const chatHere = document.createElement("button");
-    chatHere.addClass("is-primary");
-    chatHere.textContent = "Ask here";
-    actionRow.append(insert, chatHere);
-    popover.appendChild(actionRow);
-    const prompts = this.settings.customPrompts ?? {};
-    const list = document.createElement("div");
-    list.addClass("agenter-selection-actions");
-    popover.appendChild(list);
-    const composer = document.createElement("div");
-    composer.addClass("agenter-selection-composer");
-    const input = document.createElement("textarea");
-    input.rows = 1;
-    input.placeholder = "Ask about selection\u2026";
-    const send = document.createElement("button");
-    send.setAttribute("aria-label", "Send in contextual chat");
-    send.textContent = "\u2191";
-    composer.append(input, send);
-    popover.appendChild(composer);
-    const orchestrator = new AgentOrchestrator(this.app, this.settings);
-    orchestrator.setAccessScope({
-      mode: sourcePath ? "note" : "none",
-      notePath: sourcePath || void 0,
-      folderPath: sourcePath.includes("/") ? sourcePath.slice(0, sourcePath.lastIndexOf("/")) : ""
-    });
-    const session = getActiveSession(this.settings);
-    orchestrator.setMessages(
-      session.messages.filter((m) => m.role === "user" || m.role === "assistant").map((m) => ({ role: m.role, content: m.content }))
-    );
-    const persistToSession = async () => {
-      const stored = [];
-      for (const m of orchestrator.messages) {
-        if (m.role === "user") stored.push({ role: "user", content: m.content ?? "" });
-        else if (m.role === "assistant" && (m.content ?? "").trim())
-          stored.push({ role: "assistant", content: m.content });
-        else if (m.role === "tool")
-          stored.push({ role: "tool", content: m.content ?? "", toolName: m.tool_name });
-      }
-      if (!stored.length) return;
-      session.messages = stored.slice(-200);
-      session.updatedAt = Date.now();
-      if (session.title === "New chat") session.title = deriveTitle(session.messages);
-      await this.saveSettings();
-      this.activeChatPanel?.reloadActiveSession();
-    };
-    const openInMain = async () => {
-      await persistToSession();
-      popover.remove();
-      await this.ensureChatOpen();
-      this.activeChatPanel?.reloadActiveSession();
-    };
-    let busy = false;
-    let hasSelectionContext = false;
-    let hydrated = false;
-    const enterChatMode = () => {
-      popover.addClass("is-chatting");
-      chatHere.textContent = "In-place chat";
-      input.placeholder = "Continue here\u2026";
-      if (!hydrated) {
-        hydrated = true;
-        for (const m of session.messages) {
-          if (m.role === "user") appendBubble("user", m.content);
-          else if (m.role === "assistant" && (m.content ?? "").trim())
-            appendBubble("assistant", m.content);
-        }
-      }
-      window.requestAnimationFrame(() => {
-        position();
-        input.focus();
-      });
-    };
-    const appendBubble = (role, text) => {
-      const bubble = document.createElement("div");
-      bubble.addClass("agenter-selection-chat-message", `is-${role}`);
-      if (role === "status") bubble.setText(text);
-      else renderMd(text, bubble);
-      chatLog.appendChild(bubble);
-      chatLog.scrollTop = chatLog.scrollHeight;
-      return bubble;
-    };
-    const requestInlineApproval = (call, customLabel) => new Promise((resolve) => {
-      let a = {};
-      try {
-        a = JSON.parse(call.arguments || "{}");
-      } catch {
-      }
-      const card = document.createElement("div");
-      card.addClass("agenter-selection-approval");
-      const destructive = call.name === "trash_note";
-      if (destructive) card.addClass("is-destructive");
-      const lbl = document.createElement("div");
-      lbl.addClass("agenter-selection-approval-label");
-      const verb = call.name.replace(/[-_]/g, " ");
-      lbl.textContent = customLabel ?? (a.path ? `${verb}: ${a.path}` : verb);
-      card.appendChild(lbl);
-      const row = document.createElement("div");
-      row.addClass("agenter-selection-approval-actions");
-      const reject = document.createElement("button");
-      reject.textContent = "Reject";
-      const approve = document.createElement("button");
-      approve.addClass("is-primary");
-      approve.textContent = destructive ? "Review deletion" : "Approve";
-      row.append(reject, approve);
-      card.appendChild(row);
-      chatLog.appendChild(card);
-      chatLog.scrollTop = chatLog.scrollHeight;
-      window.requestAnimationFrame(position);
-      const settle = (ok) => {
-        row.remove();
-        const st = document.createElement("div");
-        st.addClass("agenter-selection-approval-status");
-        st.textContent = ok ? "\u2713 Approved" : "\u2715 Rejected";
-        card.appendChild(st);
-        resolve(ok);
-      };
-      let armed = false;
-      let armTimer = null;
-      approve.addEventListener("click", () => {
-        if (!destructive) {
-          settle(true);
-          return;
-        }
-        if (!armed) {
-          armed = true;
-          approve.textContent = "Click again: Move to Trash";
-          armTimer = window.setTimeout(() => {
-            armed = false;
-            approve.textContent = "Review deletion";
-          }, 6e3);
-          return;
-        }
-        if (armTimer !== null) window.clearTimeout(armTimer);
-        settle(true);
-      });
-      reject.addEventListener("click", () => settle(false));
-    });
-    const runInline = async (question) => {
-      const clean = question.trim();
-      if (!clean || busy) return;
-      enterChatMode();
-      busy = true;
-      send.disabled = true;
-      input.value = "";
-      appendBubble("user", clean);
-      const typing = appendBubble("status", "Thinking\u2026");
-      let response = "";
-      let responseEl = null;
-      let renderTimer = null;
-      const alreadyHasContext = clean.includes(selection);
-      const prompt = hasSelectionContext || alreadyHasContext ? clean : `${clean}
-
-<selected-text>
-${selection}
-</selected-text>`;
-      hasSelectionContext = true;
-      orchestrator.shouldAbort = () => !document.body.contains(popover);
-      const flush = () => {
-        if (!responseEl) return;
-        renderMd(response, responseEl);
-        chatLog.scrollTop = chatLog.scrollHeight;
-      };
-      let reasoningEl = null;
-      let reasoningText = "";
-      const callbacks = {
-        onReasoningToken: (token) => {
-          if (typing.parentNode) typing.remove();
-          if (!reasoningEl) {
-            reasoningEl = appendBubble("status", "");
-            reasoningEl.addClass("is-reasoning");
-          }
-          reasoningText += token;
-          reasoningEl.textContent = `Thinking \xB7 ${reasoningText}`;
-          chatLog.scrollTop = chatLog.scrollHeight;
-        },
-        onAssistantToken: (token) => {
-          reasoningEl?.addClass("is-complete");
-          if (typing.parentNode) typing.remove();
-          if (!responseEl) responseEl = appendBubble("assistant", "");
-          response += token;
-          if (renderTimer === null) {
-            renderTimer = window.setTimeout(() => {
-              renderTimer = null;
-              flush();
-            }, 70);
-          }
-        },
-        onToolUse: (name) => {
-          if (typing.parentNode) typing.remove();
-          appendBubble("status", `Using ${name}\u2026`);
-        },
-        onToolResult: () => {
-        },
-        // Tool calls now work here too: read-only tools run automatically and
-        // mutating tools show an inline Approve / Reject card.
-        onAccessRequest: (request) => requestInlineApproval(
-          { name: "access", arguments: "{}" },
-          `Allow ${request.requestedMode} access for this run${request.targetPath ? `: ${request.targetPath}` : ""}`
-        ),
-        onApprovalRequest: (call) => requestInlineApproval(call),
-        onError: (error) => {
-          if (typing.parentNode) typing.remove();
-          appendBubble("status", `Error: ${error}`);
-        },
-        onDone: () => {
-          if (renderTimer !== null) window.clearTimeout(renderTimer);
-          if (typing.parentNode) typing.remove();
-          flush();
-          busy = false;
-          send.disabled = false;
-          input.focus();
-          void persistToSession();
-          window.requestAnimationFrame(position);
-        }
-      };
-      await orchestrator.run(prompt, callbacks);
-    };
-    const quickActions = [
-      ["Summarize", "Summarize this selection clearly in concise bullet points."],
-      ["Explain", "Explain this selection simply, preserving important details."],
-      ["Rewrite", "Rewrite this selection to be clearer and more polished."],
-      ["Translate", "Translate this selection. Infer the most useful target language from the current text and conversation."],
-      ["Fix writing", "Fix grammar, spelling, punctuation, and readability without changing the meaning."],
-      ["Make tasks", "Convert this selection into a practical Markdown checklist."]
-    ];
-    for (const [label, instruction] of quickActions) {
-      const button = document.createElement("button");
-      button.addClass("agenter-selection-action", "is-quick");
-      button.textContent = label;
-      button.addEventListener("click", () => void runInline(instruction));
-      list.appendChild(button);
-    }
-    Object.entries(prompts).slice(0, 4).forEach(([key, template]) => {
-      const btn = document.createElement("button");
-      btn.addClass("agenter-selection-action");
-      btn.textContent = key.replace(/[-_]/g, " ");
-      btn.title = String(template);
-      btn.addEventListener("click", () => {
-        const tmpl = String(template);
-        const filled = tmpl.includes("{{selection}}") ? tmpl.replace(/\{\{\s*selection\s*\}\}/g, selection) : tmpl;
-        void runInline(filled);
-      });
-      list.appendChild(btn);
-    });
-    chatHere.addEventListener("click", () => enterChatMode());
-    const submit = () => void runInline(input.value);
-    send.addEventListener("click", submit);
-    input.addEventListener("keydown", (e) => {
-      if (e.key === "Enter" && !e.shiftKey) {
-        e.preventDefault();
-        submit();
-      }
-    });
-    document.body.appendChild(popover);
-    position();
-    const onDown = (ev) => {
-      if (!popover.contains(ev.target)) {
-        popover.remove();
-        document.removeEventListener("mousedown", onDown, true);
-      }
-    };
-    window.setTimeout(() => document.addEventListener("mousedown", onDown, true), 0);
+  /**
+   * Contextual third chat mode. The caret point is only consulted when the
+   * popover is set to follow the selection; a pinned popover ignores it.
+   */
+  showSelectionAI(editor, selection, event, focus = true) {
+    const caret = this.caretPoint(editor, event);
+    const popover = openSelectionPopover(this, selection, caret);
+    if (focus) popover?.focus();
+  }
+  /** Bottom-left of the selection end, falling back to the pointer. */
+  caretPoint(editor, event) {
+    const coords = editor?.cursorCoords?.(false, "window");
+    if (coords) return { x: coords.left, y: coords.bottom };
+    if (event instanceof MouseEvent) return { x: event.clientX, y: event.clientY };
+    return void 0;
   }
   async ensureChatOpen() {
     if (this.activeChatPanel) return;
