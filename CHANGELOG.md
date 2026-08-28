@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.7.1 - Scrollable chip row, and previews of the real UI
 
 - The contextual popover's action row read as clipped rather than scrollable;
   the trailing-edge fade is back.

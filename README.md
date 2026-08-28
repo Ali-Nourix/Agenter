@@ -290,8 +290,8 @@ node test/render-previews.mjs
 4. Tag the commit with exactly the manifest version, no `v` prefix:
 
    ```bash
-   git tag 1.7.0
-   git push origin 1.7.0
+   git tag 1.7.1
+   git push origin 1.7.1
    ```
 
 The workflow checks that the tag, manifest, package, lockfile and
