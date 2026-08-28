@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.7.0 - Pinnable contextual popover and theme-aware chat
+
+- Redesigned the selection popover: one header row, a collapsed quote of the selection, scrollable action chips, and a single composer, all built from Obsidian's own theme variables.
+- Added a placement choice for the popover — follow the selection, or keep it on one fixed spot. Dragging it by its header pins that spot and remembers it.
+- Added a "Show on selection" toggle so the popover can be opened from the command or editor menu only.
+- Fixed the chat panel in light themes: surfaces, borders, and shadows now derive from theme-aware tokens instead of hardcoded white/black tints.
+- Moved the popover into `src/selection-popover.ts` with a scoped `Component` lifecycle instead of a `document.body` MutationObserver.
+- Removed ~30 KB of superseded popover CSS that had accumulated across five redesign layers.
+- Switched vault tool calls to `getFileByPath` / `getFolderByPath`, `cachedRead` for read-only reads, and `process` for atomic edits.
+- Moved static styling out of TypeScript into `styles.css`.
+- Release builds now also publish a zip containing `main.js`, `manifest.json`, and `styles.css`.
+
 ## 1.6.3 - Reliable GitHub release metadata
 
 - Fixed the reasoning brain icon and circular orbit animation.
