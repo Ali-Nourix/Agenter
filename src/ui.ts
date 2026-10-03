@@ -812,29 +812,67 @@ export class FloatingChatPanel {
         toggle.addEventListener("change", () => save(key, toggle.checked));
       } else {
         const fallback = fallbacks[key] ?? {};
+        const isTokens = key === "max_tokens";
+        // Counts are whole numbers however the schema words them.
+        const whole = isTokens || spec.type === "integer" || fallback.type === "integer";
         const min = Number(spec.minimum ?? fallback.minimum ?? 0);
-        const max = Number(key === "max_tokens" ? Math.max(Number(spec.maximum ?? 0), profile.maxOutput) : spec.maximum ?? fallback.maximum ?? 100);
-        const step = Number(spec.multipleOf ?? fallback.multipleOf ?? (spec.type === "integer" ? 1 : 0.1));
-        const initial = Number(values[key] ?? spec.default ?? fallback.default ?? min);
+        const max = Number(isTokens ? Math.max(Number(spec.maximum ?? 0), profile.maxOutput) : spec.maximum ?? fallback.maximum ?? 100);
+        const step = whole ? Math.max(1, Math.round(Number(spec.multipleOf ?? fallback.multipleOf ?? 1))) : Number(spec.multipleOf ?? fallback.multipleOf ?? 0.1);
+        const decimals = whole ? 0 : (String(step).split(".")[1] ?? "").length;
+        const tidy = (n: number) => {
+          const clamped = Math.max(min, Math.min(max, Number.isFinite(n) ? n : min));
+          return whole ? Math.round(clamped) : Number(clamped.toFixed(decimals));
+        };
+        // With no value of its own the answer length is "auto": what the box shows is what is really asked for.
+        const stored = values[key];
+        const initial = tidy(Number(isTokens ? stored ?? profile.maxOutput : stored ?? spec.default ?? fallback.default ?? min));
         const number = top.createEl("input");
         number.type = "number"; number.min = String(min); number.max = String(max); number.step = String(step); number.value = String(initial);
-        number.addEventListener("change", () => save(key, Math.max(min, Math.min(max, Number(number.value)))));
-        if (key === "max_tokens") {
-          const auto = top.createEl("button", { text: "Auto", attr: { type: "button", title: "No limit of Agenter's own: the model's maximum" } });
+        number.addClass("agenter-model-number");
+        let range: HTMLInputElement | null = null;
+        let auto: HTMLButtonElement | null = null;
+        const paint = () => {
+          if (!range) return;
+          const span = max - min;
+          range.style.setProperty("--fill", `${span > 0 ? Math.max(0, Math.min(100, ((Number(range.value) - min) / span) * 100)) : 0}%`);
+        };
+        const showAuto = (on: boolean) => {
+          auto?.classList.toggle("is-active", on);
+          auto?.setAttribute("aria-pressed", String(on));
+        };
+        number.addEventListener("change", () => {
+          const value = tidy(Number(number.value));
+          number.value = String(value);
+          if (range) { range.value = String(value); paint(); }
+          save(key, value);
+          if (isTokens) { showAuto(false); this.refreshContextMeter(); }
+        });
+        if (isTokens) {
+          auto = top.createEl("button", { text: "Auto", attr: { type: "button", title: "No limit of Agenter's own: the model's maximum", "aria-pressed": "false" } });
           auto.addClass("agenter-model-auto");
+          showAuto(stored === undefined);
           auto.addEventListener("click", () => {
             delete values.max_tokens;
-            number.value = String(profile.maxOutput);
+            number.value = String(tidy(profile.maxOutput));
+            if (range) { range.value = number.value; paint(); }
+            showAuto(true);
             void this.plugin.saveSettings();
             this.refreshContextMeter();
           });
         }
         if (Number.isFinite(max) && max - min <= 1_000_000) {
-          const range = row.createEl("input");
+          range = row.createEl("input");
           range.type = "range"; range.min = String(min); range.max = String(max); range.step = String(step); range.value = String(initial);
-          range.addEventListener("input", () => { number.value = range.value; });
-          range.addEventListener("change", () => save(key, Number(range.value)));
-          number.addEventListener("input", () => { range.value = number.value; });
+          range.addClass("agenter-model-range");
+          range.setAttribute("aria-label", labels[key] ?? key.replace(/_/g, " "));
+          paint();
+          range.addEventListener("input", () => { number.value = range!.value; paint(); });
+          range.addEventListener("change", () => {
+            const value = tidy(Number(range!.value));
+            save(key, value);
+            if (isTokens) { showAuto(false); this.refreshContextMeter(); }
+          });
+          number.addEventListener("input", () => { range!.value = number.value; paint(); });
         }
       }
       rendered++;
@@ -843,13 +881,14 @@ export class FloatingChatPanel {
     if (properties.max_tokens || properties.temperature) {
       const row = pop.createDiv({ cls: "agenter-model-control" });
       const top = row.createDiv({ cls: "agenter-model-control-top" });
-      top.createEl("label", { text: "Context window (tokens)" });
+      top.createEl("label", { text: "Context window", attr: { title: "In tokens" } });
       const overrides = (this.plugin.settings.modelOverrides ??= {});
       const input = top.createEl("input");
       input.type = "number";
       input.min = "2048";
       input.step = "1024";
-      input.placeholder = `Auto: ${profile.contextWindow.toLocaleString("en-US")}`;
+      input.placeholder = "Auto";
+      input.addClass("agenter-model-number");
       input.value = overrides[modelKey]?.contextWindow ? String(overrides[modelKey]!.contextWindow) : "";
       const apply = () => {
         const n = Math.floor(Number(input.value));
@@ -861,12 +900,22 @@ export class FloatingChatPanel {
         void this.plugin.saveSettings();
         this.refreshContextMeter();
       };
-      input.addEventListener("change", apply);
-      const reset = top.createEl("button", { text: "Auto", attr: { type: "button", title: "Use what the provider reports" } });
+      const reset = top.createEl("button", { text: "Auto", attr: { type: "button", title: "Use what the provider reports", "aria-pressed": "false" } });
       reset.addClass("agenter-model-auto");
+      const showAuto = () => {
+        const on = !input.value;
+        reset.classList.toggle("is-active", on);
+        reset.setAttribute("aria-pressed", String(on));
+      };
+      showAuto();
+      input.addEventListener("change", () => {
+        apply();
+        showAuto();
+      });
       reset.addEventListener("click", () => {
         input.value = "";
         apply();
+        showAuto();
       });
       const hint = row.createDiv({ cls: "agenter-model-hint" });
       const sources: Record<string, string> = { override: "set by you", learned: "learned from the provider's errors", api: "reported by the provider", catalog: "from the catalog", known: "known for this model", default: "assumed: the provider did not say" };

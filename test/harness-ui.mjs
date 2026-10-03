@@ -266,5 +266,68 @@ const send = async (text) => { panel["inputEl"].value = text; await panel["send"
   eq($$(".agenter-msg-assistant").at(-1).dataset.raw, "Done.", "and the conversation goes on");
 }
 
+// ── the model menu: whole numbers, Auto, sliders that show what they hold ──
+{
+  const key = "openai-compatible-default:test-model";
+  delete plugin.settings.modelOverrides[key];
+  // What the old slider could leave behind: a count with a fraction in it.
+  plugin.settings.modelOptions = { [key]: { max_tokens: 4070.5, temperature: 0.7 } };
+  const anchor = document.createElement("button");
+  document.body.appendChild(anchor);
+  await panel["openModelMenu"](anchor);
+  const pop = $(".agenter-model-popover");
+  ok(pop, "the model menu opens");
+  const row = (label) => $$(".agenter-model-control", pop).find((r) => $("label", r)?.textContent === label);
+  const tokens = row("Max output tokens");
+  const tokenInput = $("input[type=number]", tokens);
+  const tokenRange = $("input[type=range]", tokens);
+  const tokenAuto = $(".agenter-model-auto", tokens);
+  ok(tokens && tokenInput && tokenRange && tokenAuto, "answer length has a number, a slider and Auto");
+  eq(tokenInput.value, "4071", "a leftover fraction is shown as a whole number");
+  eq(tokenInput.step, "1", "…and counts step by one");
+  eq(tokenRange.step, "1", "…on the slider too");
+  ok(!tokenAuto.classList.contains("is-active") && tokenAuto.getAttribute("aria-pressed") === "false", "Auto is not lit while a number is set");
+  ok(/%$/.test(tokenRange.style.getPropertyValue("--fill")) && tokenRange.style.getPropertyValue("--fill") !== "0%", "the slider track is filled up to its value");
+  ok(tokenRange.classList.contains("agenter-model-range") && tokenRange.getAttribute("aria-label") === "Max output tokens", "the slider has its own style hook and a name");
+
+  tokenInput.value = "5000.5";
+  tokenInput.dispatchEvent(new window.Event("change"));
+  eq(plugin.settings.modelOptions[key].max_tokens, 5001, "typing a fraction stores a whole number");
+  eq(tokenRange.value, "5001", "…and moves the slider to it");
+  tokenInput.value = "999999999";
+  tokenInput.dispatchEvent(new window.Event("change"));
+  eq(Number(tokenInput.value), Number(tokenInput.max), "a number above what the model allows is brought back to the limit");
+
+  tokenAuto.click();
+  eq(plugin.settings.modelOptions[key].max_tokens, undefined, "Auto removes the number of our own");
+  ok(tokenAuto.classList.contains("is-active") && tokenAuto.getAttribute("aria-pressed") === "true", "…and lights up");
+  eq(tokenInput.value, tokenInput.max, "…and the box shows what is really asked for: the model's maximum");
+  eq(tokenRange.value, tokenInput.max, "…with the slider at the end");
+
+  tokenRange.value = "2000";
+  tokenRange.dispatchEvent(new window.Event("input"));
+  eq(tokenInput.value, "2000", "dragging the slider fills the box");
+  tokenRange.dispatchEvent(new window.Event("change"));
+  eq(plugin.settings.modelOptions[key].max_tokens, 2000, "…and lets go of it into the settings");
+  ok(!tokenAuto.classList.contains("is-active"), "…so Auto goes dark again");
+
+  const temp = row("Temperature");
+  const tempInput = $("input[type=number]", temp);
+  eq(tempInput.value, "0.7", "a decimal setting keeps its decimal");
+  tempInput.value = "0.30000000000000004";
+  tempInput.dispatchEvent(new window.Event("change"));
+  eq(plugin.settings.modelOptions[key].temperature, 0.3, "…without the floating-point tail");
+
+  const win = row("Context window");
+  ok($("input", win).placeholder === "Auto" && $(".agenter-model-auto", win).classList.contains("is-active"), "the window starts on Auto");
+  $("input", win).value = "64000";
+  $("input", win).dispatchEvent(new window.Event("change"));
+  ok(!$(".agenter-model-auto", win).classList.contains("is-active") && plugin.settings.modelOverrides[key].contextWindow === 64000, "setting a window turns Auto off and keeps the number");
+  $(".agenter-model-auto", win).click();
+  ok($(".agenter-model-auto", win).classList.contains("is-active") && !plugin.settings.modelOverrides[key], "Auto brings it back");
+  pop.remove();
+  delete plugin.settings.modelOptions[key];
+}
+
 server.close();
 console.log(`HARNESS_UI_OK (${count()} checks)`);

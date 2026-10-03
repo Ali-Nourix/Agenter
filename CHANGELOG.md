@@ -1,5 +1,21 @@
 # Changelog
 
+## 1.8.1 - The model menu's sliders
+
+- Redrew the sliders in the model menu. Obsidian's own slider is a hairline with
+  an 18px white thumb that spilled over the dividers between rows; the control
+  now has room of its own, a filled track in the accent colour and a thumb that
+  follows the theme, in dark and light.
+- Answer length and other counts are whole numbers: dragging the slider could
+  leave `4070.5` in the box. Values are rounded to the control's step, clamped
+  to the model's limits, and a leftover fraction from before is shown rounded.
+- With no number of its own, **Max output tokens** now shows what is really asked
+  for (the model's maximum) instead of a schema default, and **Auto** lights up
+  while it is in effect. **Context window** gets the same, with a shorter
+  placeholder that no longer gets cut off.
+- Rows line up: the number box and **Auto** sit together at the right edge of
+  every row, and **Reset for this model** is readable on dark themes.
+
 ## 1.8.0 - A harness for every model, a context bar, attachments, and copying
 
 ### No answer cap, and a bar for the window
