@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased - A harness for every model, a context bar, attachments, and copying
+## 1.8.0 - A harness for every model, a context bar, attachments, and copying
 
 ### No answer cap, and a bar for the window
 
