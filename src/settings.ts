@@ -3,6 +3,7 @@ import AgenterPlugin from "../main";
 import { probeModels } from "./api";
 
 import { ProviderType, ModelCatalogCache, ModelMetadata } from "./provider-types";
+import type { LearnedModelInfo } from "./harness/model-profile";
 
 export interface ProviderConfig {
   /** Unique id */
@@ -62,8 +63,31 @@ export interface AgentSettings {
   providers: ProviderConfig[];
   /** Currently selected provider id */
   activeProviderId: string;
-  /** Max tokens for a completion */
+  /**
+   * A limit on one answer, in tokens. 0 (the default) means no limit of the plugin's own: the model's maximum,
+   * less whatever its window has no room for.
+   */
   maxTokens: number;
+  /** Summarize or clear the oldest part of a conversation before it fills the model's window. */
+  autoCompact: boolean;
+  /** Share of the window at which that starts (0.5 to 0.95). */
+  compactThreshold: number;
+  /** Show how full the model's window is. */
+  showContextMeter: boolean;
+  /** Read tool calls a model wrote as text, and run them. */
+  textToolCalls: boolean;
+  /** Send a request again after a rate limit, an overloaded server or a dropped connection. */
+  retryTransientErrors: boolean;
+  /** Stop a model that calls the same tool with the same arguments over and over. */
+  loopGuard: boolean;
+  /** Ask Ollama for the model's whole context window instead of at most 32k (it reserves memory for all of it). */
+  ollamaFullContext: boolean;
+  /** Describe images and scanned pages with a model that can see, for one that cannot. "" picks one automatically. */
+  visionHelperProviderId: string;
+  /** Limits found while running (a window named in an error, a parameter a model refused), per provider:model. */
+  modelLimits: Record<string, LearnedModelInfo>;
+  /** Limits set by hand in a model's settings, per provider:model. */
+  modelOverrides: Record<string, { contextWindow?: number; maxOutput?: number }>;
   /** Temperature */
   temperature: number;
   /** System prompt */
@@ -196,7 +220,17 @@ export const DEFAULT_SETTINGS: AgentSettings = {
     },
   ],
   activeProviderId: "openai-default",
-  maxTokens: 4096,
+  maxTokens: 0,
+  autoCompact: true,
+  compactThreshold: 0.8,
+  showContextMeter: true,
+  textToolCalls: true,
+  retryTransientErrors: true,
+  loopGuard: true,
+  ollamaFullContext: false,
+  visionHelperProviderId: "",
+  modelLimits: {},
+  modelOverrides: {},
   temperature: 0.7,
   systemPrompt:
     "You are Agenter, a helpful AI assistant embedded in Obsidian.\n\n" +
@@ -633,13 +667,17 @@ export class AgentSettingTab extends PluginSettingTab {
       );
 
     new Setting(chatPane)
-      .setName("Max tokens")
+      .setName("Answer length limit")
+      .setDesc("Leave empty for no limit of Agenter's own: every answer may be as long as the model allows. Set a number only to cap cost.")
       .addText((t) =>
-        t.setValue(String(this.plugin.settings.maxTokens)).onChange(async (v) => {
-          const n = parseInt(v, 10);
-          this.plugin.settings.maxTokens = isNaN(n) ? 4096 : n;
-          await this.plugin.saveSettings();
-        })
+        t
+          .setPlaceholder("Model maximum")
+          .setValue(this.plugin.settings.maxTokens > 0 ? String(this.plugin.settings.maxTokens) : "")
+          .onChange(async (v) => {
+            const n = parseInt(v.replace(/[^\d]/g, ""), 10);
+            this.plugin.settings.maxTokens = Number.isFinite(n) && n > 0 ? n : 0;
+            await this.plugin.saveSettings();
+          })
       );
 
     new Setting(chatPane)
@@ -660,6 +698,124 @@ export class AgentSettingTab extends PluginSettingTab {
         await this.plugin.saveSettings();
       })
     );
+
+    // --- Context and reliability ---
+    new Setting(chatPane).setName("Context and reliability").setHeading();
+
+    new Setting(chatPane)
+      .setName("Show how full the context is")
+      .setDesc("A bar above the message box: how much of the model's window the conversation uses.")
+      .addToggle((tg) =>
+        tg.setValue(this.plugin.settings.showContextMeter).onChange(async (v) => {
+          this.plugin.settings.showContextMeter = v;
+          await this.plugin.saveSettings();
+          this.plugin.refreshContextMeters();
+        })
+      );
+
+    new Setting(chatPane)
+      .setName("Compact long conversations")
+      .setDesc("Before the window fills, old tool output is cleared and the oldest turns are summarized by the model, so it keeps working from what matters.")
+      .addToggle((tg) =>
+        tg.setValue(this.plugin.settings.autoCompact).onChange(async (v) => {
+          this.plugin.settings.autoCompact = v;
+          await this.plugin.saveSettings();
+        })
+      );
+
+    new Setting(chatPane)
+      .setName("Compact when this full")
+      .setDesc("Share of the window at which compaction starts.")
+      .addSlider((s) =>
+        s
+          .setLimits(50, 95, 5)
+          .setValue(Math.round(this.plugin.settings.compactThreshold * 100))
+          .setDynamicTooltip()
+          .onChange(async (v) => {
+            this.plugin.settings.compactThreshold = v / 100;
+            await this.plugin.saveSettings();
+          })
+      );
+
+    new Setting(chatPane)
+      .setName("Retry after temporary errors")
+      .setDesc("Wait and try again after a rate limit, an overloaded server or a dropped connection, instead of stopping.")
+      .addToggle((tg) =>
+        tg.setValue(this.plugin.settings.retryTransientErrors).onChange(async (v) => {
+          this.plugin.settings.retryTransientErrors = v;
+          await this.plugin.saveSettings();
+        })
+      );
+
+    new Setting(chatPane)
+      .setName("Run tool calls written as text")
+      .setDesc("Some open models write a tool call as text instead of using the API. Read those and run them.")
+      .addToggle((tg) =>
+        tg.setValue(this.plugin.settings.textToolCalls).onChange(async (v) => {
+          this.plugin.settings.textToolCalls = v;
+          await this.plugin.saveSettings();
+        })
+      );
+
+    new Setting(chatPane)
+      .setName("Stop repeated tool calls")
+      .setDesc("A model that makes the same call with the same arguments again and again is told so, then stopped.")
+      .addToggle((tg) =>
+        tg.setValue(this.plugin.settings.loopGuard).onChange(async (v) => {
+          this.plugin.settings.loopGuard = v;
+          await this.plugin.saveSettings();
+        })
+      );
+
+    new Setting(chatPane)
+      .setName("Ollama: use the model's whole context")
+      .setDesc("Ollama reserves memory for the whole window it is asked for, so by default Agenter asks for at most 32k tokens. Turn this on to ask for the model's maximum.")
+      .addToggle((tg) =>
+        tg.setValue(this.plugin.settings.ollamaFullContext).onChange(async (v) => {
+          this.plugin.settings.ollamaFullContext = v;
+          await this.plugin.saveSettings();
+          this.plugin.refreshContextMeters();
+        })
+      );
+
+    new Setting(chatPane)
+      .setName("Describe images for models that cannot see")
+      .setDesc("When the chosen model cannot see images (or a PDF is only scanned pages), this provider describes them and reads out the text, and the chosen model gets that. Automatic picks the first provider that can see.")
+      .addDropdown((dd) => {
+        dd.addOption("", "Automatic");
+        dd.addOption("off", "Off");
+        for (const p of this.plugin.settings.providers) {
+          if (p.apiKey && p.supportsVision) dd.addOption(p.id, p.name);
+        }
+        dd.setValue(this.plugin.settings.visionHelperProviderId ?? "");
+        dd.onChange(async (v) => {
+          this.plugin.settings.visionHelperProviderId = v;
+          await this.plugin.saveSettings();
+        });
+      });
+
+    new Setting(chatPane)
+      .setName("Harness report")
+      .setDesc("What Agenter did to keep the model working (retries, compaction, repairs) and what it knows about the model. Copy it when a model misbehaves.")
+      .addButton((btn) =>
+        btn.setButtonText("Copy report").onClick(async () => {
+          const text = this.plugin.harnessReport();
+          try {
+            await navigator.clipboard.writeText(text);
+            new Notice("Harness report copied.");
+          } catch {
+            new Notice("Could not copy. Open the developer console and run the Agenter command instead.");
+          }
+        })
+      )
+      .addButton((btn) =>
+        btn.setButtonText("Forget learned limits").onClick(async () => {
+          this.plugin.settings.modelLimits = {};
+          await this.plugin.saveSettings();
+          this.plugin.refreshContextMeters();
+          new Notice("Learned model limits cleared.");
+        })
+      );
 
     // --- Contextual popover (appears when text is selected) ---
     new Setting(chatPane).setName("Contextual popover").setHeading();

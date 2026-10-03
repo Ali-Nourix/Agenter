@@ -3,3 +3,4 @@ main.js.map
 *.js.map
 .DS_Store
 data.json
+test/meter-preview.bundle.js

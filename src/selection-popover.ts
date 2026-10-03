@@ -1,7 +1,9 @@
 import { App, Component, MarkdownRenderer, Notice, setIcon } from "obsidian";
 import AgenterPlugin from "../main";
 import { AgentOrchestrator, ChatCallbacks } from "./orchestrator";
-import { deriveTitle, getActiveSession } from "./settings";
+import { deriveTitle, getActiveProvider, getActiveSession } from "./settings";
+import { ContextMeter } from "./context-meter";
+import { copyText } from "./clipboard";
 
 /** Where the contextual popover shows up. */
 export type SelectionAnchor = "selection" | "pinned";
@@ -50,6 +52,7 @@ export class SelectionPopover {
   private readonly orchestrator: AgentOrchestrator;
   private readonly sourcePath: string;
   private readonly cleanups: Array<() => void> = [];
+  private meter: ContextMeter | null = null;
 
   private busy = false;
   private closed = false;
@@ -78,7 +81,7 @@ export class SelectionPopover {
     this.app = plugin.app;
     this.component.load();
     this.sourcePath = this.app.workspace.getActiveFile()?.path ?? "";
-    this.orchestrator = new AgentOrchestrator(this.app, plugin.settings);
+    this.orchestrator = new AgentOrchestrator(this.app, plugin.settings, plugin.harness);
     this.orchestrator.setAccessScope({
       mode: this.sourcePath ? "note" : "none",
       notePath: this.sourcePath || undefined,
@@ -144,6 +147,11 @@ export class SelectionPopover {
     this.actionsEl = root.createDiv({ cls: "agenter-ctx-actions" });
     this.buildActions();
 
+    // ---------------------------------------------- how full the window is
+    const meterRow = root.createDiv({ cls: "agenter-ctx-meter-row" });
+    this.meter = new ContextMeter(meterRow, { compact: true, onReport: () => void this.copyReport() });
+    this.meter.setVisible(plugin.settings.showContextMeter !== false);
+
     // -------------------------------------------------------- composer
     const composer = root.createDiv({ cls: "agenter-ctx-composer" });
     this.inputEl = composer.createEl("textarea", {
@@ -163,11 +171,15 @@ export class SelectionPopover {
       }
       if (e.key === "Escape") this.close();
     });
-    this.inputEl.addEventListener("input", () => this.autoGrowInput());
+    this.inputEl.addEventListener("input", () => {
+      this.autoGrowInput();
+      this.refreshMeter();
+    });
 
     document.body.appendChild(root);
     this.makeDraggable(head);
     this.place();
+    this.refreshMeter();
 
     // Reposition instead of drifting off-screen when the window changes.
     const onResize = () => this.place();
@@ -355,9 +367,47 @@ export class SelectionPopover {
   private addRow(role: "user" | "assistant" | "status", text: string): HTMLElement {
     const row = this.logEl.createDiv({ cls: `agenter-ctx-row is-${role}` });
     if (role === "status") row.setText(text);
-    else this.renderMarkdown(text, row);
+    else {
+      row.dataset.raw = text;
+      this.renderMarkdown(text, row);
+    }
     this.logEl.scrollTop = this.logEl.scrollHeight;
     return row;
+  }
+
+  /** A copy button on an answer, added once it is complete. Selecting text and Ctrl+C work throughout. */
+  private addCopy(row: HTMLElement, raw: string) {
+    row.dataset.raw = raw;
+    row.querySelector(".agenter-ctx-copy")?.remove();
+    const btn = row.createEl("button", { cls: "agenter-ctx-copy", attr: { type: "button", "aria-label": "Copy answer", title: "Copy answer" } });
+    setIcon(btn, "copy");
+    btn.addEventListener("click", async (event) => {
+      event.stopPropagation();
+      const ok = await copyText(row.dataset.raw ?? raw);
+      setIcon(btn, ok ? "check" : "x");
+      btn.setAttribute("aria-label", ok ? "Copied" : "Could not copy");
+      window.setTimeout(() => {
+        setIcon(btn, "copy");
+        btn.setAttribute("aria-label", "Copy answer");
+      }, 1600);
+    });
+  }
+
+  private async copyReport() {
+    const ok = await copyText(this.plugin.harnessReport());
+    new Notice(ok ? "Harness report copied." : "Could not copy the harness report.");
+  }
+
+  /** The bar for the conversation as it stands. */
+  refreshMeter(): void {
+    if (!this.meter || this.closed) return;
+    this.meter.setVisible(this.plugin.settings.showContextMeter !== false);
+    const provider = getActiveProvider(this.plugin.settings);
+    this.meter.update(this.orchestrator.snapshot(this.inputEl?.value ?? ""), { model: provider ? `${provider.name} · ${provider.model}` : undefined, busy: this.busy });
+  }
+
+  static refreshCurrentMeter(): void {
+    SelectionPopover.current?.refreshMeter();
   }
 
   private enterChatMode() {
@@ -407,6 +457,17 @@ export class SelectionPopover {
     };
 
     const callbacks: ChatCallbacks = {
+      onNotice: (notice) => {
+        if (notice.kind === "retry" || notice.kind === "compact" || notice.kind === "warning") {
+          this.addRow("status", notice.text).addClass("is-notice");
+        }
+      },
+      onStreamReset: () => {
+        responseEl?.remove();
+        responseEl = null;
+        response = "";
+      },
+      onContext: (snapshot) => this.meter?.update(snapshot, { busy: true }),
       onReasoningToken: (token) => {
         typing.remove();
         if (!reasoningEl) {
@@ -461,8 +522,10 @@ export class SelectionPopover {
         }
         typing.remove();
         flush();
+        if (responseEl && response.trim()) this.addCopy(responseEl, response);
         this.busy = false;
         this.sendBtn.disabled = false;
+        this.refreshMeter();
         if (!this.closed) this.inputEl.focus();
         void this.persist();
         window.requestAnimationFrame(() => this.place());
@@ -561,6 +624,8 @@ export class SelectionPopover {
     if (SelectionPopover.current === this) SelectionPopover.current = null;
     if (this.renderTimer !== null) window.clearTimeout(this.renderTimer);
     for (const cleanup of this.cleanups) cleanup();
+    this.meter?.destroy();
+    this.meter = null;
     this.component.unload();
     this.rootEl.remove();
   }

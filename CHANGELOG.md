@@ -1,5 +1,97 @@
 # Changelog
 
+## Unreleased - A harness for every model, a context bar, attachments, and copying
+
+### No answer cap, and a bar for the window
+
+- Removed the plugin's own answer limit. **Answer length limit** now defaults to
+  *auto* (`0`): each request asks for the most the model can write given what
+  is already in the window. A stored value of the old default (4096) is reset to
+  auto on upgrade; any other number is kept as a cap.
+- Added a context bar above the composer and in the contextual popover. It shows
+  the share of the window in use, marks where compaction starts, is a labelled
+  `meter` for assistive technology, and opens a popover that breaks the window
+  into instructions, tools, conversation and what is being typed, with
+  **Compact now**, **New chat** and **Copy harness report**. A leading `≈` marks
+  an estimate until the provider's own count replaces it.
+
+### The harness
+
+- Added per-model profiles (window, largest answer, what the model refuses),
+  resolved from your override, limits learned from errors, the provider's model
+  list, a table of known models, then a default. Learned limits are saved;
+  **Forget learned limits** and a window override in the model menu are in the
+  settings.
+- Added conversation compaction: old tool output is cleared, the oldest turns are
+  summarized with the model, and what is left over is dropped with a note. The
+  latest question and the last tool results are kept. **Compact long
+  conversations** and **Compact when this full** control it; the
+  **Compact this conversation now** command runs it on demand.
+- Capped single tool results (head and tail, with a hint for asking for the
+  rest), and extracted embedded base64 images into real image parts.
+- Added error handling that reads the provider's reason: window and answer
+  limits it names, and parameters it refuses (`temperature`, `max_tokens` vs
+  `max_completion_tokens`, `stream_options`, tools). Agenter adjusts and
+  retries. Rate limits, overload and dropped connections are retried with
+  `Retry-After` or backoff, and a stream that ends without a finish is retried
+  instead of being accepted as a short answer.
+- Answers cut at the limit are continued and joined into one message.
+- Tool calls written as text (Hermes `<tool_call>`, Mistral `[TOOL_CALLS]`,
+  fenced or bare JSON, `<function=…>`) are read and run, and kept off the
+  screen while streaming. Broken tool-argument JSON is repaired or sent back to
+  the model with what was wrong. Models that refuse native tools get them
+  described in the prompt.
+- Added a sanitizer for histories that stricter APIs reject: orphaned or missing
+  tool results, duplicate ids, empty messages, a first turn that is not the
+  user's.
+- Added loop and empty-answer guards: a nudge for an empty answer, a warning at
+  three identical tool calls, a stop at six.
+- Provider fixes: Anthropic merged tool results, `is_error`, prompt caching on
+  Anthropic's own host and temperature clamping; Gemini unique call ids, merged
+  function responses, `thoughtSignature` round-trip, a schema sanitizer, the key
+  in a header instead of the URL, and no built-in search together with
+  functions; OpenAI `max_completion_tokens` and `reasoning_content` pass-back
+  for the thinking models that need it; Ollama through its native `/api/chat`
+  with a real `num_ctx` (capped at 32k unless **Ollama: use the model's whole
+  context** is on), falling back to the OpenAI route on older servers.
+- Reasoning models get long first-byte timeouts; stopping a request now closes
+  the connection.
+- Added **Copy harness report** (settings, popover, command palette) with what
+  Agenter did and what it knows about the model, for bug reports.
+
+### Attachments
+
+- The composer takes several attachments at once — picker, drop or paste —
+  each with a chip that says what the model will receive: images, PDFs, Word,
+  PowerPoint, Excel, text and code, and audio, up to 32 MB each.
+- Models that can see get pictures (downscaled when large) and PDFs natively
+  where the provider reads them. Otherwise PDF text is extracted with Obsidian's
+  own PDF engine, Office files are read from the file, and scanned pages are
+  drawn and shown.
+- Models that cannot see get a description from a *vision helper* provider
+  (**Describe images for models that cannot see**: automatic, a chosen
+  provider, or off), or an honest note telling them not to guess.
+- Attachments are counted against the window and trimmed with a visible note
+  when they would not fit.
+
+### Copying text
+
+- Messages are selectable. Each has a copy button, a right-click menu (copy the
+  selection, the message as Markdown or plain text, select the message, copy the
+  whole conversation) and the header copies the whole thread as Markdown.
+- Retry, compaction and repair lines are shown in the chat but never saved into
+  the history.
+
+### Tests and previews
+
+- Added `test/harness-core.mjs`, `harness-providers.mjs`, `harness-attachments.mjs`,
+  `harness-loop.mjs` and `harness-ui.mjs`: scripted HTTP servers that behave like
+  awkward providers, the agent loop end to end, and the UI code in jsdom.
+- Added `test/meter-preview.html` and `test/render-harness-preview.mjs` to render
+  the context bar from the real stylesheet and component.
+- Not yet checked in a live Obsidian vault or against the real provider APIs:
+  PDF page rendering, limit discovery, and mobile.
+
 ## 1.7.1 - Scrollable chip row, and previews of the real UI
 
 - The contextual popover's action row read as clipped rather than scrollable;

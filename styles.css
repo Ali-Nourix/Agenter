@@ -3613,3 +3613,295 @@
 .agenter-root .is-hidden { display: none; }
 .agenter-icon-fallback { font-size: 16px; line-height: 1; }
 .agenter-modal-status { font-size: 12px; opacity: 0.8; }
+
+/* ============================================================
+   Selectable text and copying
+   Obsidian turns text selection off around its own interface;
+   what Agenter writes is meant to be read, selected and copied.
+   ============================================================ */
+.agenter-bubble,
+.agenter-bubble *,
+.agenter-msg-system,
+.agenter-msg-system *,
+.agenter-tool-line-body,
+.agenter-tool-line-body *,
+.agenter-notice-text,
+.agenter-ctx-row,
+.agenter-ctx-row *,
+.agenter-ctx-quote,
+.agenter-ctx-quote * {
+  -webkit-user-select: text;
+  user-select: text;
+}
+.agenter-bubble,
+.agenter-ctx-row { cursor: text; }
+.agenter-bubble a,
+.agenter-bubble button,
+.agenter-ctx-row a,
+.agenter-ctx-row button { cursor: pointer; }
+.agenter-bubble ::selection,
+.agenter-tool-line-body ::selection,
+.agenter-ctx-row ::selection { background: color-mix(in srgb, var(--interactive-accent) 35%, transparent); }
+.agenter-msg-user .agenter-bubble ::selection { background: color-mix(in srgb, var(--text-on-accent) 35%, transparent); }
+
+/* A small copy button at the corner of a message: there when it is looked for. */
+.agenter-msg { position: relative; }
+.agenter-msg-copy {
+  position: absolute;
+  inset-block-end: -11px;
+  inset-inline-end: 10px;
+  z-index: 1;
+  display: grid;
+  width: 22px;
+  height: 22px;
+  min-width: 22px;
+  padding: 0;
+  place-items: center;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 7px;
+  color: var(--text-muted);
+  background: var(--background-primary);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.16);
+  opacity: 0;
+  cursor: pointer;
+  transition: opacity 0.12s ease, color 0.12s ease, background-color 0.12s ease;
+}
+.agenter-msg:hover .agenter-msg-copy,
+.agenter-msg:focus-within .agenter-msg-copy,
+.agenter-msg-copy:focus-visible { opacity: 1; }
+.agenter-msg-copy:hover { color: var(--text-normal); background: var(--background-secondary); }
+.agenter-msg-copy:focus-visible { outline: 2px solid var(--interactive-accent); outline-offset: 1px; }
+.agenter-msg-copy.is-copied { color: var(--color-green, #3fa66b); opacity: 1; }
+.agenter-msg-copy.is-failed { color: var(--text-error); opacity: 1; }
+.agenter-msg-copy .svg-icon { width: 14px; height: 14px; }
+@media (hover: none) { .agenter-msg-copy { opacity: 0.7; } }
+
+.agenter-ctx-row.is-assistant { position: relative; }
+.agenter-ctx-copy {
+  display: inline-grid;
+  width: 22px;
+  height: 22px;
+  margin-top: 2px;
+  padding: 0;
+  place-items: center;
+  border: 0;
+  border-radius: 6px;
+  color: var(--text-faint);
+  background: transparent;
+  box-shadow: none;
+  cursor: pointer;
+}
+.agenter-ctx-copy:hover,
+.agenter-ctx-copy:focus-visible { color: var(--text-normal); background: var(--background-modifier-hover); }
+.agenter-ctx-copy .svg-icon { width: 13px; height: 13px; }
+
+/* ============================================================
+   Lines the harness writes: a retry, a compaction, a repair
+   ============================================================ */
+.agenter-notice {
+  display: flex;
+  align-items: flex-start;
+  align-self: stretch;
+  gap: 7px;
+  margin: 2px 4px;
+  padding: 5px 9px;
+  border-inline-start: 2px solid var(--background-modifier-border);
+  border-radius: 4px;
+  color: var(--text-muted);
+  background: color-mix(in srgb, var(--background-secondary) 70%, transparent);
+  font-size: 12px;
+  line-height: 1.45;
+}
+.agenter-notice-icon { display: inline-flex; margin-top: 2px; color: var(--text-faint); }
+.agenter-notice-icon .svg-icon { width: 13px; height: 13px; }
+.agenter-notice.is-warning { border-inline-start-color: var(--color-orange, #d98b2b); }
+.agenter-notice.is-warning .agenter-notice-icon { color: var(--color-orange, #d98b2b); }
+.agenter-notice.is-compact,
+.agenter-notice.is-compact .agenter-notice-icon { border-inline-start-color: var(--interactive-accent); color: var(--text-muted); }
+.agenter-notice.is-retry .agenter-notice-icon .svg-icon { animation: agenter-spin 1.4s linear infinite; }
+@keyframes agenter-spin { to { transform: rotate(360deg); } }
+.agenter-ctx-row.is-notice { font-style: normal; border-inline-start: 2px solid var(--background-modifier-border); padding-inline-start: 7px; }
+@media (prefers-reduced-motion: reduce) { .agenter-notice.is-retry .agenter-notice-icon .svg-icon { animation: none; } }
+
+/* ============================================================
+   The context meter: how full the model's window is
+   ============================================================ */
+.agenter-ctxmeter-row { padding: 0 12px 4px; }
+.agenter-ctxmeter { position: relative; display: block; }
+.agenter-ctxmeter.is-hidden,
+.agenter-ctxmeter.is-empty { display: none; }
+.agenter-ctxmeter-btn {
+  display: flex;
+  width: 100%;
+  min-height: 24px;
+  align-items: center;
+  gap: 9px;
+  padding: 2px 2px;
+  border: 0;
+  border-radius: 6px;
+  color: var(--text-muted);
+  background: transparent;
+  box-shadow: none;
+  font: inherit;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  text-align: start;
+  cursor: pointer;
+}
+.agenter-ctxmeter-btn:hover { color: var(--text-normal); background: var(--background-modifier-hover); }
+.agenter-ctxmeter-btn:focus-visible { outline: 2px solid var(--interactive-accent); outline-offset: 1px; }
+.agenter-ctxmeter-track {
+  position: relative;
+  flex: 1;
+  height: 5px;
+  min-width: 40px;
+  overflow: visible;
+  border-radius: 999px;
+  background: var(--background-modifier-border);
+}
+.agenter-ctxmeter-fill {
+  position: absolute;
+  inset-block: 0;
+  inset-inline-start: 0;
+  min-width: 2px;
+  border-radius: 999px;
+  background: var(--agenter-meter, var(--interactive-accent));
+  transition: width 0.25s ease, background-color 0.25s ease;
+}
+.agenter-ctxmeter.is-estimated .agenter-ctxmeter-fill {
+  background-image: repeating-linear-gradient(135deg, rgba(255,255,255,0.28) 0 3px, transparent 3px 6px);
+  background-color: var(--agenter-meter, var(--interactive-accent));
+}
+.agenter-ctxmeter-mark {
+  position: absolute;
+  inset-block: -2px;
+  width: 2px;
+  margin-inline-start: -1px;
+  border-radius: 1px;
+  background: var(--text-faint);
+  opacity: 0.8;
+}
+.agenter-ctxmeter-mark.is-off { display: none; }
+.agenter-ctxmeter-label { flex: none; min-width: 7ch; text-align: end; white-space: nowrap; }
+.agenter-ctxmeter.is-ok { --agenter-meter: var(--interactive-accent); }
+.agenter-ctxmeter.is-warn { --agenter-meter: var(--color-yellow, #d9a82b); }
+.agenter-ctxmeter.is-high { --agenter-meter: var(--color-orange, #e08a2e); }
+.agenter-ctxmeter.is-full { --agenter-meter: var(--color-red, #e05252); }
+.agenter-ctxmeter.is-full .agenter-ctxmeter-label,
+.agenter-ctxmeter.is-high .agenter-ctxmeter-label { color: var(--agenter-meter); font-weight: 600; }
+.agenter-ctxmeter.is-busy .agenter-ctxmeter-fill { animation: agenter-pulse 1.6s ease-in-out infinite; }
+@keyframes agenter-pulse { 50% { opacity: 0.65; } }
+@media (prefers-reduced-motion: reduce) {
+  .agenter-ctxmeter-fill { transition: none; }
+  .agenter-ctxmeter.is-busy .agenter-ctxmeter-fill { animation: none; }
+}
+@media (forced-colors: active) {
+  .agenter-ctxmeter-track { border: 1px solid CanvasText; background: Canvas; }
+  .agenter-ctxmeter-fill { background: Highlight; }
+  .agenter-ctxmeter-mark { background: CanvasText; }
+}
+
+.agenter-ctxmeter.is-compact .agenter-ctxmeter-btn { min-height: 20px; gap: 7px; font-size: 10.5px; }
+.agenter-ctxmeter.is-compact .agenter-ctxmeter-track { height: 4px; }
+.agenter-ctxmeter.is-compact .agenter-ctxmeter-label { min-width: 4ch; }
+.agenter-ctx-meter-row { padding: 0 2px; }
+
+/* The details, over the composer. */
+.agenter-ctxmeter-pop {
+  position: absolute;
+  inset-inline: 0;
+  bottom: calc(100% + 6px);
+  z-index: 40;
+  display: flex;
+  min-width: 250px;
+  max-width: 360px;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 10px;
+  color: var(--text-normal);
+  background: var(--background-primary);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.22);
+  font-size: 12px;
+  line-height: 1.45;
+  -webkit-user-select: text;
+  user-select: text;
+}
+.agenter-ctxmeter.is-compact .agenter-ctxmeter-pop { inset-inline: auto 0; min-width: 260px; }
+.agenter-ctxmeter-pop-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.agenter-ctxmeter-pop-title { font-size: 13px; }
+.agenter-ctxmeter-pop-model { overflow: hidden; color: var(--text-faint); text-overflow: ellipsis; white-space: nowrap; font-size: 11px; }
+.agenter-ctxmeter-pop-big { font-size: 13px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.agenter-ctxmeter-pop-note { color: var(--text-muted); font-size: 11px; }
+.agenter-ctxmeter-stack { display: flex; height: 8px; overflow: hidden; border-radius: 999px; background: var(--background-modifier-border); }
+.agenter-ctxmeter-seg.is-system { background: var(--color-pink, #d9619a); }
+.agenter-ctxmeter-seg.is-tools { background: var(--color-cyan, #2bb0c9); }
+.agenter-ctxmeter-seg.is-history { background: var(--interactive-accent); }
+.agenter-ctxmeter-seg.is-pending { background: var(--color-yellow, #d9a82b); }
+.agenter-ctxmeter-parts { display: grid; gap: 3px; margin: 0; padding: 0; list-style: none; }
+.agenter-ctxmeter-part { display: flex; align-items: center; gap: 7px; }
+.agenter-ctxmeter-dot { width: 8px; height: 8px; flex: none; border-radius: 50%; }
+.agenter-ctxmeter-dot.is-system { background: var(--color-pink, #d9619a); }
+.agenter-ctxmeter-dot.is-tools { background: var(--color-cyan, #2bb0c9); }
+.agenter-ctxmeter-dot.is-history { background: var(--interactive-accent); }
+.agenter-ctxmeter-dot.is-pending { background: var(--color-yellow, #d9a82b); }
+.agenter-ctxmeter-part-name { flex: 1; }
+.agenter-ctxmeter-part-n { color: var(--text-muted); font-variant-numeric: tabular-nums; }
+.agenter-ctxmeter-facts { display: grid; grid-template-columns: auto 1fr; gap: 2px 10px; margin: 0; }
+.agenter-ctxmeter-facts dt { color: var(--text-muted); }
+.agenter-ctxmeter-facts dd { margin: 0; }
+.agenter-ctxmeter-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.agenter-ctxmeter-action {
+  padding: 4px 10px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 6px;
+  color: var(--text-normal);
+  background: var(--background-secondary);
+  box-shadow: none;
+  font-size: 12px;
+  cursor: pointer;
+}
+.agenter-ctxmeter-action:hover:not(:disabled) { background: var(--background-modifier-hover); }
+.agenter-ctxmeter-action:disabled { opacity: 0.45; cursor: default; }
+.agenter-ctxmeter-link {
+  align-self: flex-start;
+  padding: 0;
+  border: 0;
+  color: var(--text-muted);
+  background: transparent;
+  box-shadow: none;
+  font-size: 11px;
+  text-decoration: underline;
+  cursor: pointer;
+}
+.agenter-ctxmeter-link:hover { color: var(--text-normal); }
+
+/* ============================================================
+   Attachments: what the model will be able to do with each
+   ============================================================ */
+.agenter-composer.is-dragover { outline: 2px dashed var(--interactive-accent); outline-offset: -3px; }
+.agenter-attachment-chip.is-native .agenter-attachment-icon { color: var(--color-green, #3fa66b); }
+.agenter-attachment-chip.is-text .agenter-attachment-icon,
+.agenter-attachment-chip.is-described .agenter-attachment-icon { color: var(--interactive-accent); }
+.agenter-attachment-chip.is-listed,
+.agenter-attachment-chip.is-unsupported { border-color: var(--color-orange, #d98b2b); }
+.agenter-attachment-chip.is-listed .agenter-attachment-icon,
+.agenter-attachment-chip.is-unsupported .agenter-attachment-icon { color: var(--color-orange, #d98b2b); }
+.agenter-attachment-size { color: var(--text-faint); }
+.agenter-attachment-plan:empty { display: none; }
+.agenter-attachment-plan { padding: 0 5px; border-radius: 4px; background: var(--background-modifier-hover); font-size: 10px; }
+
+/* Model menu: the "Auto" links and hints. */
+.agenter-model-auto {
+  padding: 1px 7px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 5px;
+  color: var(--text-muted);
+  background: transparent;
+  box-shadow: none;
+  font-size: 11px;
+  cursor: pointer;
+}
+.agenter-model-auto:hover { color: var(--text-normal); background: var(--background-modifier-hover); }
+.agenter-model-hint { margin-top: 3px; color: var(--text-faint); font-size: 11px; line-height: 1.4; }

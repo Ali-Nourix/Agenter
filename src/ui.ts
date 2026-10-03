@@ -7,10 +7,11 @@ import {
   Component,
 } from "obsidian";
 import AgenterPlugin from "../main";
-import { AgentOrchestrator, ChatCallbacks } from "./orchestrator";
+import { AgentOrchestrator, ChatCallbacks, HarnessNotice } from "./orchestrator";
 import { ChatMessage, ToolCall } from "./api";
 import {
   getActiveProvider,
+  ProviderConfig,
   StoredMessage,
   ChatSession,
   getActiveSession,
@@ -21,6 +22,12 @@ import { probeModels } from "./api";
 import { capabilityBadges, ModelMetadata, MessagePart } from "./provider-types";
 import { VaultAccessRequest, VaultAccessScope } from "./tools";
 import { fetchCloudflareModelSchema } from "./cloudflare";
+import { ContextMeter } from "./context-meter";
+import { copyText, plainTextOf, selectContents, selectedTextWithin, transcriptMarkdown, TranscriptEntry } from "./clipboard";
+import { profileFor, rememberReported } from "./harness";
+import { fetchModelLimits } from "./harness/limits-fetch";
+import { ATTACHMENT_ACCEPT, MAX_ATTACHMENT_BYTES, classifyAttachment, mimeFor, planFor } from "./harness/attachments";
+import { formatTokens } from "./harness";
 
 type Scope = "note" | "folder" | "vault" | "none";
 type Mode = "docked" | "floating";
@@ -123,6 +130,10 @@ export class FloatingChatPanel {
   private scrollFrame: number | null = null;
   private scrollSettleTimer: number | null = null;
   private scrollResizeObserver: ResizeObserver | null = null;
+  private meter: ContextMeter | null = null;
+  private meterTimer: number | null = null;
+  private limitsAsked = new Set<string>();
+  private lastNotice: HTMLElement | null = null;
 
   constructor(plugin: AgenterPlugin, options: FloatingChatPanelOptions = {}) {
     this.plugin = plugin;
@@ -132,7 +143,7 @@ export class FloatingChatPanel {
     this.component.load();
     this.scope = plugin.settings.defaultContextScope;
     this.mode = options.mode ?? "floating";
-    this.orchestrator = new AgentOrchestrator(this.app, plugin.settings);
+    this.orchestrator = new AgentOrchestrator(this.app, plugin.settings, plugin.harness);
     this.build();
     this.loadActiveSession();
   }
@@ -234,6 +245,7 @@ export class FloatingChatPanel {
     const stopBtn = mkIconBtn("square", "Stop generating", () => this.abort());
     stopBtn.addClass("agenter-stop");
     const newBtn = mkIconBtn("plus", "New chat", () => this.newSession());
+    const copyChatBtn = mkIconBtn("copy", "Copy conversation as Markdown", () => void this.copyConversation());
     const floatBtn = mkIconBtn(
       this.mode === "docked" ? "maximize-2" : "panel-right",
       this.mode === "docked" ? "Open as floating window" : "Dock in right sidebar",
@@ -244,6 +256,7 @@ export class FloatingChatPanel {
 
     controls.appendChild(stopBtn);
     controls.appendChild(newBtn);
+    controls.appendChild(copyChatBtn);
     controls.appendChild(floatBtn);
     if (this.mode === "floating") controls.appendChild(minBtn);
     controls.appendChild(closeBtn);
@@ -386,9 +399,11 @@ export class FloatingChatPanel {
     this.plugin.settings.activeSessionId = session.id;
     await this.plugin.saveSettings();
     this.messages = [];
+    this.orchestrator.setMessages([]);
     this.renderSessionList();
     this.messagesEl.empty();
     this.addWelcome();
+    this.refreshContextMeter();
     this.inputEl?.focus();
   }
 
@@ -470,6 +485,7 @@ export class FloatingChatPanel {
     messages.addEventListener("wheel", (event) => {
       if (event.deltaY < 0) this.autoFollow = false;
     }, { passive: true });
+    messages.addEventListener("contextmenu", (event) => this.openCopyMenu(event));
 
     // Tool cards animate their height while opening/closing. Observing each
     // dynamic child keeps a following viewport pinned without competing jumps.
@@ -528,6 +544,7 @@ export class FloatingChatPanel {
     });
     input.addEventListener("input", () => {
       this.autoGrow();
+      this.scheduleMeter();
       if (this.inputEl.value.trim() === "/") this.openActionMenu(input);
     });
     this.inputEl = input;
@@ -562,7 +579,7 @@ export class FloatingChatPanel {
     const footerRight = document.createElement("div");
     footerRight.addClass("agenter-composer-right");
 
-    const attachBtn = mkIconBtn("paperclip", "Attach image or audio", (e) => {
+    const attachBtn = mkIconBtn("paperclip", "Attach images, PDFs, documents or audio", (e) => {
       e?.stopPropagation();
       void this.pickMediaAttachment();
     });
@@ -602,6 +619,38 @@ export class FloatingChatPanel {
 
     footer.appendChild(footerRight);
     composer.appendChild(footer);
+
+    // How full the model's window is.
+    const meterRow = document.createElement("div");
+    meterRow.addClass("agenter-ctxmeter-row");
+    this.meter = new ContextMeter(meterRow, {
+      onCompact: () => void this.compactNow(),
+      onNewChat: () => void this.newSession(),
+      onReport: () => void this.copyHarnessReport(),
+    });
+    this.meter.setVisible(this.plugin.settings.showContextMeter !== false);
+    inputWrap.appendChild(meterRow);
+
+    // Files can be dropped on the composer, and pictures pasted into it.
+    composer.addEventListener("dragover", (e) => {
+      if (!e.dataTransfer?.types?.includes("Files")) return;
+      e.preventDefault();
+      composer.addClass("is-dragover");
+    });
+    composer.addEventListener("dragleave", () => composer.removeClass("is-dragover"));
+    composer.addEventListener("drop", (e) => {
+      composer.removeClass("is-dragover");
+      const files = Array.from(e.dataTransfer?.files ?? []);
+      if (!files.length) return;
+      e.preventDefault();
+      void this.addAttachments(files);
+    });
+    input.addEventListener("paste", (e) => {
+      const files = Array.from(e.clipboardData?.files ?? []);
+      if (!files.length) return;
+      e.preventDefault();
+      void this.addAttachments(files);
+    });
 
     inputWrap.appendChild(composer);
     root.appendChild(inputWrap);
@@ -707,6 +756,7 @@ export class FloatingChatPanel {
     };
     const properties = collectProperties(schema?.input);
     const modelKey = `${provider.id}:${provider.model}`;
+    const profile = profileFor(this.plugin.settings, provider);
     if (!this.plugin.settings.modelOptions) this.plugin.settings.modelOptions = {};
     const values = this.plugin.settings.modelOptions[modelKey] ?? {};
     this.plugin.settings.modelOptions[modelKey] = values;
@@ -720,7 +770,8 @@ export class FloatingChatPanel {
     };
     const fallbacks: Record<string, any> = {
       temperature: { type: "number", minimum: 0, maximum: 2, default: this.plugin.settings.temperature, multipleOf: 0.1 },
-      max_tokens: { type: "integer", minimum: 1, maximum: metadata?.maxOutputTokens ?? 32768, default: this.plugin.settings.maxTokens },
+      // The model's own maximum: nothing of the plugin's is in the way.
+      max_tokens: { type: "integer", minimum: 1, maximum: profile.maxOutput, default: profile.maxOutput },
       top_p: { type: "number", minimum: 0, maximum: 1, default: 0.9, multipleOf: 0.05 },
       top_k: { type: "integer", minimum: 1, maximum: 100, default: 40 },
       steps: { type: "integer", minimum: 1, maximum: 20, default: 4 },
@@ -762,13 +813,23 @@ export class FloatingChatPanel {
       } else {
         const fallback = fallbacks[key] ?? {};
         const min = Number(spec.minimum ?? fallback.minimum ?? 0);
-        const max = Number(spec.maximum ?? fallback.maximum ?? (key === "max_tokens" ? 32768 : 100));
+        const max = Number(key === "max_tokens" ? Math.max(Number(spec.maximum ?? 0), profile.maxOutput) : spec.maximum ?? fallback.maximum ?? 100);
         const step = Number(spec.multipleOf ?? fallback.multipleOf ?? (spec.type === "integer" ? 1 : 0.1));
         const initial = Number(values[key] ?? spec.default ?? fallback.default ?? min);
         const number = top.createEl("input");
         number.type = "number"; number.min = String(min); number.max = String(max); number.step = String(step); number.value = String(initial);
         number.addEventListener("change", () => save(key, Math.max(min, Math.min(max, Number(number.value)))));
-        if (Number.isFinite(max) && max - min <= 100000) {
+        if (key === "max_tokens") {
+          const auto = top.createEl("button", { text: "Auto", attr: { type: "button", title: "No limit of Agenter's own: the model's maximum" } });
+          auto.addClass("agenter-model-auto");
+          auto.addEventListener("click", () => {
+            delete values.max_tokens;
+            number.value = String(profile.maxOutput);
+            void this.plugin.saveSettings();
+            this.refreshContextMeter();
+          });
+        }
+        if (Number.isFinite(max) && max - min <= 1_000_000) {
           const range = row.createEl("input");
           range.type = "range"; range.min = String(min); range.max = String(max); range.step = String(step); range.value = String(initial);
           range.addEventListener("input", () => { number.value = range.value; });
@@ -776,6 +837,40 @@ export class FloatingChatPanel {
           number.addEventListener("input", () => { range.value = number.value; });
         }
       }
+      rendered++;
+    }
+    // What the model can take in: found out, or set here.
+    if (properties.max_tokens || properties.temperature) {
+      const row = pop.createDiv({ cls: "agenter-model-control" });
+      const top = row.createDiv({ cls: "agenter-model-control-top" });
+      top.createEl("label", { text: "Context window (tokens)" });
+      const overrides = (this.plugin.settings.modelOverrides ??= {});
+      const input = top.createEl("input");
+      input.type = "number";
+      input.min = "2048";
+      input.step = "1024";
+      input.placeholder = `Auto: ${profile.contextWindow.toLocaleString("en-US")}`;
+      input.value = overrides[modelKey]?.contextWindow ? String(overrides[modelKey]!.contextWindow) : "";
+      const apply = () => {
+        const n = Math.floor(Number(input.value));
+        const next = { ...(overrides[modelKey] ?? {}) };
+        if (Number.isFinite(n) && n >= 2048) next.contextWindow = n;
+        else delete next.contextWindow;
+        if (Object.keys(next).length) overrides[modelKey] = next;
+        else delete overrides[modelKey];
+        void this.plugin.saveSettings();
+        this.refreshContextMeter();
+      };
+      input.addEventListener("change", apply);
+      const reset = top.createEl("button", { text: "Auto", attr: { type: "button", title: "Use what the provider reports" } });
+      reset.addClass("agenter-model-auto");
+      reset.addEventListener("click", () => {
+        input.value = "";
+        apply();
+      });
+      const hint = row.createDiv({ cls: "agenter-model-hint" });
+      const sources: Record<string, string> = { override: "set by you", learned: "learned from the provider's errors", api: "reported by the provider", catalog: "from the catalog", known: "known for this model", default: "assumed: the provider did not say" };
+      hint.setText(`${formatTokens(profile.contextWindow)} (${sources[profile.contextSource] ?? profile.contextSource}); answers up to ${formatTokens(profile.maxOutput)}.${profile.modelMaxContext && profile.modelMaxContext > profile.contextWindow ? ` The model supports ${formatTokens(profile.modelMaxContext)}; Ollama reserves memory for the whole window, so raise this, or turn on “Use the model's whole context” in settings.` : ""}`);
       rendered++;
     }
 
@@ -858,40 +953,74 @@ export class FloatingChatPanel {
   private async pickMediaAttachment() {
     const picker = document.createElement("input");
     picker.type = "file";
-    picker.accept = "image/*,audio/*,.wav,.mp3,.m4a,.ogg,.webm,.flac";
-    picker.multiple = false;
-    picker.addEventListener("change", async () => {
-      const file = picker.files?.[0];
-      if (!file) return;
-      if (file.size > 20 * 1024 * 1024) {
-        new Notice("Attachments must be 20 MB or smaller.");
-        return;
-      }
-      const type: MessagePart["type"] = file.type.startsWith("image/") ? "image" : "audio";
-      const data = Buffer.from(await file.arrayBuffer()).toString("base64");
-      this.pendingParts = [{ type, data, mimeType: file.type || (type === "image" ? "image/png" : "audio/mpeg"), name: file.name }];
-      this.renderPendingAttachments();
-      this.inputEl.focus();
-    });
+    picker.accept = ATTACHMENT_ACCEPT;
+    picker.multiple = true;
+    picker.addEventListener("change", () => void this.addAttachments(Array.from(picker.files ?? [])));
     picker.click();
+  }
+
+  /** Adds files to what is sent with the next message: pictures, PDFs, Office files, text, audio. */
+  private async addAttachments(files: File[]) {
+    for (const file of files) {
+      if (this.pendingParts.length >= 8) {
+        new Notice("At most 8 attachments per message.");
+        break;
+      }
+      if (file.size > MAX_ATTACHMENT_BYTES) {
+        new Notice(`${file.name || "That file"} is larger than 32 MB.`);
+        continue;
+      }
+      const name = file.name || (file.type.startsWith("image/") ? "pasted-image.png" : "attachment");
+      const kind = classifyAttachment(name, file.type);
+      if (kind === "unsupported") {
+        new Notice(`${name}: this kind of file cannot be read.`);
+        continue;
+      }
+      const data = Buffer.from(await file.arrayBuffer()).toString("base64");
+      const type: MessagePart["type"] = kind === "image" ? "image" : kind === "pdf" ? "pdf" : kind === "audio" ? "audio" : "file";
+      this.pendingParts.push({ type, data, mimeType: mimeFor(name, file.type), name });
+    }
+    this.renderPendingAttachments();
+    this.scheduleMeter();
+    this.inputEl.focus();
+  }
+
+  /** Whether some other model could describe a picture for one that cannot see. */
+  private helperAvailable(): boolean {
+    const setting = this.plugin.settings.visionHelperProviderId ?? "";
+    if (setting === "off") return false;
+    const active = getActiveProvider(this.plugin.settings);
+    return this.plugin.settings.providers.some((p) => p.apiKey && p.supportsVision && p.type !== "cloudflare" && p.id !== active?.id && (!setting || p.id === setting));
   }
 
   private renderPendingAttachments() {
     this.attachmentStripEl.empty();
     this.attachmentStripEl.toggleClass("has-items", this.pendingParts.length > 0);
     if (!this.pendingParts.length) return;
-    for (const part of this.pendingParts) {
+    const provider = getActiveProvider(this.plugin.settings);
+    const profile = provider ? profileFor(this.plugin.settings, provider) : null;
+    const helper = this.helperAvailable();
+    this.pendingParts.forEach((part, index) => {
+      const name = part.name ?? "attachment";
+      const kind = classifyAttachment(name, part.mimeType ?? "");
+      const plan = profile ? planFor(kind, profile, helper) : null;
       const chip = this.attachmentStripEl.createDiv({ cls: "agenter-attachment-chip" });
+      if (plan) chip.addClass(`is-${plan.plan}`);
+      if (plan) chip.title = plan.label;
       const icon = chip.createSpan({ cls: "agenter-attachment-icon" });
-      safeIcon(icon, part.type === "image" ? "image" : "audio-lines");
-      chip.createSpan({ text: part.name ?? (part.type === "image" ? "Image" : "Audio") });
-      const remove = chip.createEl("button", { attr: { "aria-label": "Remove attachment", type: "button" } });
+      safeIcon(icon, kind === "image" ? "image" : kind === "audio" ? "audio-lines" : kind === "xlsx" ? "table" : "file-text");
+      chip.createSpan({ cls: "agenter-attachment-name", text: name });
+      const kb = Math.max(1, Math.round((part.data?.length ?? 0) * 0.75 / 1024));
+      chip.createSpan({ cls: "agenter-attachment-size", text: kb >= 1024 ? `${(kb / 1024).toFixed(1)} MB` : `${kb} KB` });
+      if (plan) chip.createSpan({ cls: "agenter-attachment-plan", text: plan.plan === "native" ? "" : plan.plan === "text" ? "as text" : plan.plan === "described" ? "described" : plan.plan === "listed" ? "cannot see" : "unreadable" });
+      const remove = chip.createEl("button", { attr: { "aria-label": `Remove ${name}`, type: "button" } });
       safeIcon(remove, "x");
       remove.addEventListener("click", () => {
-        this.pendingParts = [];
+        this.pendingParts.splice(index, 1);
         this.renderPendingAttachments();
+        this.scheduleMeter();
       });
-    }
+    });
   }
 
   private autoGrow() {
@@ -917,6 +1046,8 @@ export class FloatingChatPanel {
           : "sliders-horizontal";
     safeIcon(this.modelSettingsBtn, icon);
     this.modelSettingsBtn.title = task ? `${task} settings` : "Settings supported by this model";
+    this.refreshContextMeter();
+    this.renderPendingAttachments();
   }
 
   private openProviderMenu(anchor: HTMLElement) {
@@ -982,6 +1113,156 @@ export class FloatingChatPanel {
     menu.showAtPosition({ x: rect.left, y: rect.bottom + 4 });
   }
 
+  // ------------------------------------------------------ context meter
+  private scheduleMeter() {
+    if (this.meterTimer !== null) window.clearTimeout(this.meterTimer);
+    this.meterTimer = window.setTimeout(() => {
+      this.meterTimer = null;
+      this.refreshContextMeter();
+    }, 180);
+  }
+
+  /** Redraws the bar that says how full the model's window is. */
+  refreshContextMeter() {
+    if (!this.meter || this.destroyed) return;
+    this.meter.setVisible(this.plugin.settings.showContextMeter !== false);
+    const provider = getActiveProvider(this.plugin.settings);
+    if (!provider) {
+      this.meter.update(null);
+      return;
+    }
+    this.askForLimits(provider);
+    const snapshot = this.orchestrator.snapshot(this.inputEl?.value ?? "", this.pendingParts);
+    this.meter.update(snapshot, { model: `${provider.name} · ${provider.model}`, busy: this.busy });
+  }
+
+  /** Where the window is only assumed, asks the provider once what it really is. */
+  private askForLimits(provider: ProviderConfig) {
+    const key = `${provider.id}:${provider.model}`;
+    if (this.limitsAsked.has(key) || !provider.apiKey) return;
+    const profile = profileFor(this.plugin.settings, provider);
+    if (profile.contextSource !== "default" && profile.contextSource !== "known") return;
+    this.limitsAsked.add(key);
+    void fetchModelLimits(provider).then(async (found) => {
+      if (this.destroyed) return;
+      if (rememberReported(this.plugin.settings, provider, found)) {
+        await this.plugin.saveSettings();
+        this.refreshContextMeter();
+      }
+    });
+  }
+
+  /** Compacts what the model remembers of this chat now: old tool output cleared, the oldest turns summarized. */
+  async compactNow() {
+    if (this.busy) {
+      new Notice("Wait for the current answer to finish.");
+      return;
+    }
+    this.orchestrator.setMessages(this.messages);
+    const fit = await this.orchestrator.compactNow((notice) => this.appendNotice(notice));
+    if (!fit || !fit.actions.length) new Notice("There is nothing to compact yet.");
+    else this.messages = this.orchestrator.messages;
+    this.refreshContextMeter();
+  }
+
+  private async copyHarnessReport() {
+    const ok = await copyText(this.plugin.harnessReport());
+    new Notice(ok ? "Harness report copied." : "Could not copy the harness report.");
+  }
+
+  /** A line in the chat for something the harness did: a retry, a compaction, a repaired call. Not saved with the chat. */
+  private appendNotice(notice: HarnessNotice) {
+    // One retry line is enough: the next replaces it.
+    if (notice.kind === "retry" && this.lastNotice?.hasClass("is-retry")) this.lastNotice.remove();
+    const el = document.createElement("div");
+    el.addClass("agenter-notice", `is-${notice.kind}`);
+    el.setAttribute("role", "status");
+    const icon = document.createElement("span");
+    icon.addClass("agenter-notice-icon");
+    safeIcon(icon, notice.kind === "retry" ? "refresh-cw" : notice.kind === "compact" ? "shrink" : notice.kind === "warning" ? "triangle-alert" : notice.kind === "repair" ? "wrench" : "info");
+    const text = document.createElement("span");
+    text.addClass("agenter-notice-text");
+    text.textContent = notice.text;
+    el.append(icon, text);
+    this.messagesEl.appendChild(el);
+    this.lastNotice = el;
+    this.trackScrollElement(el);
+    this.scrollToBottom();
+  }
+
+  // ------------------------------------------------------- copy and select
+  /** A small copy button on a message: the message as written, in Markdown. */
+  private addCopyButton(host: HTMLElement, getText: () => string, label = "Copy message") {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.addClass("agenter-msg-copy");
+    btn.setAttribute("aria-label", label);
+    btn.title = label;
+    safeIcon(btn, "copy");
+    btn.addEventListener("click", async (event) => {
+      event.stopPropagation();
+      const ok = await copyText(getText());
+      safeIcon(btn, ok ? "check" : "x");
+      btn.addClass(ok ? "is-copied" : "is-failed");
+      btn.setAttribute("aria-label", ok ? "Copied" : "Could not copy");
+      window.setTimeout(() => {
+        safeIcon(btn, "copy");
+        btn.removeClass("is-copied", "is-failed");
+        btn.setAttribute("aria-label", label);
+      }, 1600);
+    });
+    host.appendChild(btn);
+  }
+
+  /** The whole conversation on screen, as Markdown. */
+  private transcript(): TranscriptEntry[] {
+    const entries: TranscriptEntry[] = [];
+    this.messagesEl.querySelectorAll(".agenter-msg, .agenter-tool-line, .agenter-msg-system").forEach((el) => {
+      const e = el as HTMLElement;
+      if (e.hasClass("is-typing")) return;
+      if (e.hasClass("agenter-tool-line")) entries.push({ role: "tool", text: e.dataset.raw ?? "", toolName: e.dataset.toolName });
+      else if (e.hasClass("agenter-msg-user")) entries.push({ role: "user", text: e.dataset.raw ?? "" });
+      else if (e.hasClass("agenter-msg-assistant")) entries.push({ role: "assistant", text: e.dataset.raw ?? "" });
+      else entries.push({ role: "system", text: e.dataset.raw ?? "" });
+    });
+    return entries;
+  }
+
+  private async copyConversation() {
+    const entries = this.transcript();
+    if (!entries.length) {
+      new Notice("There is nothing to copy yet.");
+      return;
+    }
+    const ok = await copyText(transcriptMarkdown(entries, this.currentSession().title));
+    new Notice(ok ? "Conversation copied as Markdown." : "Could not copy the conversation.");
+  }
+
+  /** Right click on text in the chat: copy what is selected, or the message, or everything. */
+  private openCopyMenu(event: MouseEvent) {
+    const target = event.target as HTMLElement | null;
+    if (!target || target.closest("button, input, textarea, a.internal-link")) return;
+    const message = target.closest<HTMLElement>(".agenter-msg, .agenter-msg-system, .agenter-tool-line, .agenter-notice");
+    if (!message) return;
+    event.preventDefault();
+    const selected = selectedTextWithin(message);
+    const raw = message.dataset.raw ?? message.textContent ?? "";
+    const menu = new Menu();
+    if (selected) {
+      menu.addItem((item) => item.setTitle("Copy").setIcon("copy").onClick(() => void copyText(selected)));
+    }
+    menu.addItem((item) => item.setTitle("Copy message (Markdown)").setIcon("clipboard-copy").onClick(() => void copyText(raw)));
+    menu.addItem((item) =>
+      item.setTitle("Copy message (plain text)").setIcon("clipboard-type").onClick(() => void copyText(plainTextOf(message.querySelector<HTMLElement>(".agenter-bubble") ?? message, raw)))
+    );
+    menu.addItem((item) =>
+      item.setTitle("Select message text").setIcon("text-select").onClick(() => selectContents(message.querySelector<HTMLElement>(".agenter-bubble") ?? message))
+    );
+    menu.addSeparator();
+    menu.addItem((item) => item.setTitle("Copy whole conversation").setIcon("files").onClick(() => void this.copyConversation()));
+    menu.showAtPosition({ x: event.clientX, y: event.clientY });
+  }
+
   // --------------------------------------------------------- history I/O
   private loadActiveSession() {
     const session = this.currentSession();
@@ -989,6 +1270,8 @@ export class FloatingChatPanel {
     this.messagesEl.empty();
     if (!session.messages.length) {
       this.addWelcome();
+      this.orchestrator.setMessages([]);
+      this.refreshContextMeter();
       return;
     }
     for (const m of session.messages) {
@@ -1001,6 +1284,8 @@ export class FloatingChatPanel {
         this.messages.push({ role: m.role as any, content: m.content });
       }
     }
+    this.orchestrator.setMessages(this.messages);
+    this.refreshContextMeter();
     this.scrollToBottom(true);
   }
 
@@ -1057,6 +1342,7 @@ export class FloatingChatPanel {
     const bubble = document.createElement("div");
     bubble.addClass("agenter-bubble");
     el.appendChild(bubble);
+    this.addCopyButton(el, () => el.dataset.raw ?? "");
 
     this.renderMarkdown(text, bubble);
 
@@ -1544,7 +1830,13 @@ The current chat will not restart.`;
     const text = this.inputEl.value.trim();
     const parts = [...this.pendingParts];
     if (!text && !parts.length) return;
-    const effectiveText = text || (parts[0]?.type === "image" ? "Describe this image in detail." : "Transcribe this audio.");
+    const effectiveText =
+      text ||
+      (parts[0]?.type === "image"
+        ? "Describe this image in detail."
+        : parts[0]?.type === "audio"
+          ? "Transcribe this audio."
+          : "Summarize this document.");
     this.inputEl.value = "";
     this.pendingParts = [];
     this.renderPendingAttachments();
@@ -1566,7 +1858,9 @@ The current chat will not restart.`;
     this.sendBtn.disabled = true;
     this.toggleStop(true);
     this.beginActivity();
-    const typing = this.showTyping();
+    let typing = this.showTyping();
+    this.lastNotice = null;
+    this.meter?.update(this.orchestrator.snapshot("", []), { busy: true });
 
     const accessScope = this.buildAccessScope();
     const contextNote = this.buildContextNote(accessScope);
@@ -1611,7 +1905,24 @@ The current chat will not restart.`;
       this.scrollToBottom();
     };
 
+    const modelLabel = (() => {
+      const p = getActiveProvider(this.plugin.settings);
+      return p ? `${p.name} · ${p.model}` : "";
+    })();
     const cb: ChatCallbacks = {
+      onNotice: (notice) => {
+        this.appendNotice(notice);
+        if (notice.kind === "retry") this.setStatus("thinking", "Trying again…");
+        else if (notice.kind === "compact") this.setStatus("thinking", "Compacting context");
+      },
+      onStreamReset: () => {
+        // The answer so far came from a request that failed: it is wiped and the request made again.
+        this.streamEl?.remove();
+        this.streamEl = null;
+        this.streamBuf = "";
+        if (!typing.parentNode) typing = this.showTyping();
+      },
+      onContext: (snapshot) => this.meter?.update(snapshot, { model: modelLabel, busy: true }),
       onReasoningToken: (t) => appendReasoning(t),
       onAssistantToken: (t) => {
         finishReasoning();
@@ -1696,9 +2007,9 @@ The current chat will not restart.`;
     };
 
     await this.orchestrator.run(prompt, cb, parts);
-    if (!this.aborted && this.orchestrator.messages.length) {
-      this.messages = this.orchestrator.messages;
-    }
+    // What the model now remembers (including a stopped run's progress, and any compaction).
+    if (this.orchestrator.messages.length) this.messages = this.orchestrator.messages;
+    this.refreshContextMeter();
   }
 
   private syncMessages() {

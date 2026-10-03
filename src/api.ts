@@ -1,145 +1,34 @@
 import { ProviderConfig } from "./settings";
 import { fetchCloudflareModels, fetchCloudflareModelSchema, cloudflareApiBase, cloudflareHeaders, normalizeCloudflareModelId } from "./cloudflare";
 import { requestUrl } from "obsidian";
-import { request as httpRequest, IncomingMessage } from "http";
-import { request as httpsRequest } from "https";
+import { streamEvents, WireOptions, FIRST_BYTE_TIMEOUT_MS, REASONING_FIRST_BYTE_TIMEOUT_MS } from "./harness/wire";
+import { ProviderError } from "./harness/errors";
+import { ModelProfile, outputLimitFor, resolveModelProfile } from "./harness/model-profile";
+import type { TokenUsage } from "./harness/tokens";
+import type { MessagePart } from "./provider-types";
 
 export interface ProviderRuntimeOptions {
+  /** A limit on one answer set by the user. Unset means the model's own maximum. */
   maxTokens?: number;
   temperature?: number;
   modelOptions?: Record<string, string | number | boolean>;
+  /** What is known about the model: its limits and which parameters it takes. Worked out from the config when not given. */
+  profile?: ModelProfile;
 }
 
-/**
- * Stream SSE directly through Node/Electron. Obsidian's requestUrl is
- * CORS-safe but normally buffers the complete response, which delays the
- * first visible token until generation has already finished.
- */
-async function* nativeNodeStream(
-  url: string,
-  headers: Record<string, string>,
-  body: string
-): AsyncGenerator<string> {
-  const target = new URL(url);
-  const requestFn = target.protocol === "http:" ? httpRequest : httpsRequest;
-
-  const response = await new Promise<IncomingMessage>((resolve, reject) => {
-    const req = requestFn(
-      target,
-      {
-        method: "POST",
-        headers: {
-          Accept: "text/event-stream",
-          "Content-Length": Buffer.byteLength(body),
-          ...headers,
-        },
-      },
-      resolve
-    );
-    req.once("error", reject);
-    req.setTimeout(120_000, () => {
-      req.destroy(new Error("Provider request timed out after 120 seconds."));
-    });
-    req.write(body);
-    req.end();
-  });
-
-  if ((response.statusCode ?? 500) >= 400) {
-    let errorBody = "";
-    for await (const chunk of response) {
-      errorBody += Buffer.isBuffer(chunk) ? chunk.toString("utf8") : String(chunk);
-      if (errorBody.length > 2000) break;
-    }
-    throw new Error(
-      `Provider error (${response.statusCode}): ${errorBody.slice(0, 500)}`
-    );
-  }
-
-  let buffer = "";
-  for await (const chunk of response) {
-    buffer += Buffer.isBuffer(chunk) ? chunk.toString("utf8") : String(chunk);
-    const lines = buffer.split(/\r?\n/);
-    buffer = lines.pop() ?? "";
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (!trimmed.startsWith("data:")) continue;
-      const data = trimmed.slice(5).trim();
-      if (data === "[DONE]") return;
-      if (data) yield data;
-    }
-  }
-
-  const trailing = buffer.trim();
-  if (trailing.startsWith("data:")) {
-    const data = trailing.slice(5).trim();
-    if (data && data !== "[DONE]") yield data;
-  }
-}
-
-/**
- * CORS-safe streaming fetch using Obsidian's `requestUrl`, which routes
- * through Electron and is NOT subject to browser CORS restrictions. This
- * lets custom providers (e.g. opencode.ai, local servers) work without
- * Access-Control-Allow-Origin errors.
- *
- * Yields one SSE `data:` payload per call (already trimmed, JSON string).
- */
-async function* obsidianStream(
-  url: string,
-  headers: Record<string, string>,
-  body: string
-): AsyncGenerator<string> {
-  const resp = await requestUrl({
-    url,
-    method: "POST",
-    headers,
-    body,
-    contentType: "application/json",
-  } as any);
-
-  const raw: any = resp as any;
-  if (raw.body && typeof raw.body.getReader === "function") {
-    const reader = raw.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = "";
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split("\n");
-      buffer = lines.pop() ?? "";
-      for (const line of lines) {
-        const trimmed = line.trim();
-        if (!trimmed || !trimmed.startsWith("data:")) continue;
-        const data = trimmed.slice(5).trim();
-        if (data === "[DONE]") return;
-        yield data;
-      }
-    }
-    return;
-  }
-
-  // Fallback: buffered body. requestUrl returns the full SSE text at once.
-  // We parse the SSE stream into individual `data:` JSON chunks and emit
-  // them with a tiny delay so the UI still feels like live streaming.
-  const text: string = raw.text ?? "";
-  const lines = text.split("\n");
-  for (const line of lines) {
-    const trimmed = line.trim();
-    if (!trimmed || !trimmed.startsWith("data:")) continue;
-    const data = trimmed.slice(5).trim();
-    if (data === "[DONE]") return;
-    yield data;
-    // Small yield to let the event loop breathe (approximate streaming).
-    await new Promise((r) => setTimeout(r, 5));
-  }
+/** Options for one request, which the loop adjusts between attempts. */
+export interface ChatOptions {
+  /** The output limit for this request (the model's maximum, or what is left of its window). */
+  maxOutput?: number;
+  /** Closing it closes the connection. */
+  signal?: AbortSignal;
 }
 
 // Unified message + tool types used across all providers.
 export interface ChatMessage {
   role: "system" | "developer" | "user" | "assistant" | "tool";
   content: string;
-  parts?: import("./provider-types").MessagePart[];
+  parts?: MessagePart[];
   metadata?: Record<string, unknown>;
   /** For tool-result messages */
   tool_call_id?: string;
@@ -147,12 +36,16 @@ export interface ChatMessage {
   tool_name?: string;
   /** For assistant tool calls */
   tool_calls?: ToolCall[];
+  /** What a thinking model thought before this answer, kept for the providers that want it back within a turn. */
+  reasoning?: string;
 }
 
 export interface ToolCall {
   id: string;
   name: string;
   arguments: string; // JSON string
+  /** Provider-specific data that has to travel with the call (Gemini's thought signature). */
+  extra?: Record<string, unknown>;
 }
 
 export interface ToolDefinition {
@@ -161,10 +54,22 @@ export interface ToolDefinition {
   parameters: object; // JSON schema
 }
 
+export type FinishReason = "stop" | "tool_calls" | "length" | "content_filter" | "malformed" | "other";
+
+export interface FinishInfo {
+  reason: FinishReason;
+  /** The provider's own word for it. */
+  raw?: string;
+}
+
 export interface StreamCallbacks {
   onToken: (chunk: string) => void;
   onReasoning?: (chunk: string) => void;
   onToolCalls?: (calls: ToolCall[]) => void;
+  /** What the provider counted for this request. */
+  onUsage?: (usage: TokenUsage) => void;
+  /** Why the answer ended. */
+  onFinish?: (info: FinishInfo) => void;
   onDone: () => void;
   onError: (err: Error) => void;
 }
@@ -177,16 +82,27 @@ export interface StreamCallbacks {
 export abstract class BaseProvider {
   protected config: ProviderConfig;
   protected runtime: ProviderRuntimeOptions;
+  protected profile: ModelProfile;
 
   constructor(config: ProviderConfig, runtime: ProviderRuntimeOptions = {}) {
     this.config = config;
     this.runtime = runtime;
+    this.profile =
+      runtime.profile ??
+      resolveModelProfile({
+        providerId: config.id,
+        providerType: config.type,
+        baseUrl: config.baseUrl,
+        model: config.model,
+        supportsVision: config.supportsVision,
+      });
   }
 
   abstract chat(
     messages: ChatMessage[],
     tools: ToolDefinition[],
-    cb: StreamCallbacks
+    cb: StreamCallbacks,
+    options?: ChatOptions
   ): Promise<void>;
 
   protected getHeaders(extra: Record<string, string> = {}): Record<string, string> {
@@ -205,31 +121,40 @@ export abstract class BaseProvider {
     return headers;
   }
 
-  protected async *streamLines(
+  /** The limit on this answer: set by the loop for the request, else the user's, else the model's own maximum. */
+  protected maxOutput(options?: ChatOptions): number {
+    return options?.maxOutput ?? outputLimitFor(this.profile, this.runtime.maxTokens);
+  }
+
+  /** Model options the user set, minus the ones this class decides itself. */
+  protected extraModelOptions(): Record<string, string | number | boolean> {
+    const out: Record<string, string | number | boolean> = {};
+    for (const [key, value] of Object.entries(this.runtime.modelOptions ?? {})) {
+      if (key === "max_tokens" || key === "max_completion_tokens" || key === "maxOutputTokens") continue;
+      out[key] = value;
+    }
+    return out;
+  }
+
+  protected wire(options?: ChatOptions, extra: Partial<WireOptions> = {}): WireOptions {
+    return {
+      signal: options?.signal,
+      firstByteTimeoutMs: this.profile.reasoning ? REASONING_FIRST_BYTE_TIMEOUT_MS : FIRST_BYTE_TIMEOUT_MS,
+      ...extra,
+    };
+  }
+
+  protected streamLines(
     body: string,
     url: string,
-    headers: Record<string, string>
+    headers: Record<string, string>,
+    options?: ChatOptions,
+    extra: Partial<WireOptions> = {}
   ): AsyncGenerator<string> {
-    let emitted = false;
-    try {
-      for await (const data of nativeNodeStream(url, headers, body)) {
-        emitted = true;
-        yield data;
-      }
-    } catch (error: any) {
-      if (emitted || String(error?.message ?? error).includes("Provider error")) {
-        throw error;
-      }
-      yield* obsidianStream(url, headers, body);
-    }
+    return streamEvents(url, headers, body, this.wire(options, extra));
   }
 }
 
-/**
- * OpenAI and OpenAI-compatible endpoints (DeepSeek, Qwen, OpenRouter, vLLM, etc.)
- * This adapter also covers the generic "custom" type when it speaks the
- * OpenAI chat/completions protocol.
- */
 function normalizedOpenAIContent(content: unknown): string {
   if (typeof content === "string") return content;
   if (content == null) return "";
@@ -244,100 +169,337 @@ function normalizedOpenAIContent(content: unknown): string {
   return typeof content === "object" ? JSON.stringify(content) : String(content);
 }
 
+function safeParse(s: string): any {
+  try {
+    return JSON.parse(s || "{}");
+  } catch {
+    return {};
+  }
+}
+
+/** Images and PDFs a message carries that this model can take as they are. */
+function mediaOf(message: ChatMessage, profile: ModelProfile): MessagePart[] {
+  return (message.parts ?? []).filter(
+    (part) => part.data && ((part.type === "image" && profile.vision) || (part.type === "pdf" && profile.pdfNative))
+  );
+}
+
+function dataUri(part: MessagePart): string {
+  return `data:${part.mimeType ?? (part.type === "pdf" ? "application/pdf" : "image/png")};base64,${part.data}`;
+}
+
+/** A stream that ended without saying it was finished was cut off (a dropped connection, a crashed server). */
+function incompleteStream(): ProviderError {
+  const error = new ProviderError("Provider error: the stream ended before the answer was complete.", { code: "ECONNRESET" });
+  error.midStream = true;
+  return error;
+}
+
+function toolCallsArgs(args: unknown): string {
+  if (typeof args === "string") return args;
+  try { return JSON.stringify(args ?? {}); } catch { return "{}"; }
+}
+
+// ── OpenAI and everything that speaks its protocol ────────────────────────
+
+/** The index of the last real user message: reasoning from before it is not sent back. */
+function lastUserIndex(messages: ChatMessage[]): number {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i].role === "user" && typeof messages[i].metadata?.kind !== "string") return i;
+  }
+  return -1;
+}
+
+export function buildOpenAIMessages(messages: ChatMessage[], profile: ModelProfile): any[] {
+  const turnStart = lastUserIndex(messages);
+  return messages.map((m, index) => {
+    if (m.role === "assistant" && m.tool_calls?.length) {
+      const out: any = {
+        role: "assistant",
+        content: normalizedOpenAIContent(m.content),
+        tool_calls: m.tool_calls.map((tc) => ({
+          id: tc.id,
+          type: "function",
+          function: { name: tc.name, arguments: toolCallsArgs(tc.arguments) },
+        })),
+      };
+      if (profile.passReasoningBack && m.reasoning && index > turnStart) out.reasoning_content = m.reasoning;
+      return out;
+    }
+    if (m.role === "tool") {
+      return { role: "tool", tool_call_id: m.tool_call_id, content: normalizedOpenAIContent(m.content) };
+    }
+    if (m.role === "user") {
+      const media = mediaOf(m, profile);
+      if (media.length) {
+        const content: any[] = [];
+        const text = normalizedOpenAIContent(m.content);
+        if (text) content.push({ type: "text", text });
+        for (const part of media) {
+          if (part.type === "image") content.push({ type: "image_url", image_url: { url: dataUri(part) } });
+          else content.push({ type: "file", file: { filename: part.name ?? "document.pdf", file_data: dataUri(part) } });
+        }
+        return { role: "user", content };
+      }
+    }
+    return { role: m.role, content: normalizedOpenAIContent(m.content) };
+  });
+}
+
+export function buildOpenAIPayload(args: {
+  config: ProviderConfig;
+  profile: ModelProfile;
+  runtime: ProviderRuntimeOptions;
+  messages: ChatMessage[];
+  tools: ToolDefinition[];
+  maxOutput: number;
+}): any {
+  const { config, profile, runtime, messages, tools, maxOutput } = args;
+  const payload: any = {
+    model: config.model,
+    messages: buildOpenAIMessages(messages, profile),
+    stream: true,
+  };
+  if (profile.streamUsage) payload.stream_options = { include_usage: true };
+  if (runtime.temperature !== undefined && profile.acceptsTemperature) payload.temperature = runtime.temperature;
+  payload[profile.outputParam] = maxOutput;
+  for (const [key, value] of Object.entries(runtime.modelOptions ?? {})) {
+    if (key === "max_tokens" || key === "max_completion_tokens") continue;
+    if (key === "temperature" && !profile.acceptsTemperature) continue;
+    payload[key] = value;
+  }
+  if (tools.length && profile.nativeTools) {
+    payload.tools = tools.map((t) => ({
+      type: "function",
+      function: { name: t.name, description: t.description, parameters: t.parameters },
+    }));
+    payload.tool_choice = "auto";
+  }
+  return payload;
+}
+
+/** An OpenAI `finish_reason`, in the harness's words. */
+function openAIFinish(raw: string | null | undefined, hadToolCalls: boolean): FinishInfo {
+  // An answer cut off by the output limit is that, calls or not: the last call may be half written.
+  if (raw === "length") return { reason: "length", raw };
+  if (hadToolCalls) return { reason: "tool_calls", raw: raw ?? undefined };
+  switch (raw) {
+    case "length": return { reason: "length", raw };
+    case "content_filter": return { reason: "content_filter", raw };
+    case "stop":
+    case "end_turn":
+    case null:
+    case undefined: return { reason: "stop", raw: raw ?? undefined };
+    case "tool_calls":
+    case "function_call": return { reason: "tool_calls", raw };
+    default: return { reason: "other", raw };
+  }
+}
+
+/**
+ * OpenAI and OpenAI-compatible endpoints (DeepSeek, Qwen, OpenRouter, vLLM, etc.)
+ * This adapter also covers the generic "custom" type when it speaks the
+ * OpenAI chat/completions protocol.
+ */
 export class OpenAIProvider extends BaseProvider {
-  chat(messages: ChatMessage[], tools: ToolDefinition[], cb: StreamCallbacks): Promise<void> {
+  chat(messages: ChatMessage[], tools: ToolDefinition[], cb: StreamCallbacks, options?: ChatOptions): Promise<void> {
     const url = `${this.config.baseUrl.replace(/\/$/, "")}/chat/completions`;
     const headers = this.getHeaders({ Authorization: `Bearer ${this.config.apiKey}` });
-
-    const payload: any = {
-      model: this.config.model,
-      messages: messages.map((m) => {
-        if (m.role === "assistant" && m.tool_calls) {
-          return {
-            role: "assistant",
-            content: normalizedOpenAIContent(m.content),
-            tool_calls: m.tool_calls.map((tc) => ({
-              id: tc.id,
-              type: "function",
-              function: { name: tc.name, arguments: tc.arguments },
-            })),
-          };
-        }
-        if (m.role === "tool") {
-          return {
-            role: "tool",
-            tool_call_id: m.tool_call_id,
-            content: normalizedOpenAIContent(m.content),
-          };
-        }
-        return { role: m.role, content: normalizedOpenAIContent(m.content) };
-      }),
-      stream: true,
-      temperature: this.runtime.temperature,
-      max_tokens: this.runtime.maxTokens,
-      ...(this.runtime.modelOptions ?? {}),
-    };
-    if (tools.length) {
-      payload.tools = tools.map((t) => ({
-        type: "function",
-        function: { name: t.name, description: t.description, parameters: t.parameters },
-      }));
-      payload.tool_choice = "auto";
-    }
-
-    return this.runStream(url, headers, payload, cb);
+    const payload = buildOpenAIPayload({
+      config: this.config,
+      profile: this.profile,
+      runtime: this.runtime,
+      messages,
+      tools,
+      maxOutput: this.maxOutput(options),
+    });
+    return this.runStream(url, headers, payload, cb, options);
   }
 
   private async runStream(
     url: string,
     headers: Record<string, string>,
     payload: any,
-    cb: StreamCallbacks
+    cb: StreamCallbacks,
+    options?: ChatOptions
   ): Promise<void> {
     try {
-      const collectedToolCalls = new Map<string, { name: string; args: string }>();
-      const indexToKey = new Map<number, string>();
-      for await (const data of this.streamLines(JSON.stringify(payload), url, headers)) {
+      // One entry per call, in the order the model began them. Servers differ in how they number and identify the
+      // pieces: by index, by id, or neither, and some send a whole call at once.
+      const slots: Array<{ id: string; name: string; args: string }> = [];
+      const byIndex = new Map<number, number>();
+      let finishRaw: string | null | undefined;
+      let sawDone = false;
+      for await (const data of this.streamLines(JSON.stringify(payload), url, headers, options)) {
+        if (data === "[DONE]") { sawDone = true; continue; }
         let json: any;
         try {
           json = JSON.parse(data);
         } catch {
           continue;
         }
-        const delta = json.choices?.[0]?.delta;
+        if (json.error) {
+          const err = json.error;
+          const message = typeof err === "string" ? err : err.message ?? JSON.stringify(err);
+          const status = typeof err?.code === "number" ? err.code : typeof err?.status === "number" ? err.status : undefined;
+          const error = new ProviderError(`Provider error${status ? ` (${status})` : ""}: ${String(message).slice(0, 800)}`, { status, body: JSON.stringify(err) });
+          error.midStream = true;
+          throw error;
+        }
+        if (json.usage && typeof json.usage === "object") {
+          const u = json.usage;
+          cb.onUsage?.({
+            inputTokens: Number(u.prompt_tokens ?? u.input_tokens ?? 0),
+            outputTokens: Number(u.completion_tokens ?? u.output_tokens ?? 0),
+            cachedTokens: Number(u.prompt_tokens_details?.cached_tokens ?? 0) || undefined,
+            reasoningTokens: Number(u.completion_tokens_details?.reasoning_tokens ?? 0) || undefined,
+          });
+        }
+        const choice = json.choices?.[0];
+        if (choice?.finish_reason) finishRaw = choice.finish_reason;
+        const delta = choice?.delta;
         if (!delta) continue;
         const reasoning = delta.reasoning_content ?? delta.reasoning ?? delta.thinking ?? json.reasoning;
         if (typeof reasoning === "string" && reasoning) cb.onReasoning?.(reasoning);
-        if (delta.content) cb.onToken(delta.content);
-        if (delta.tool_calls) {
+        const text = normalizedOpenAIContent(delta.content);
+        if (text) cb.onToken(text);
+        if (Array.isArray(delta.tool_calls)) {
           for (const tc of delta.tool_calls) {
-            const key =
-              tc.id ??
-              (tc.index !== undefined
-                ? indexToKey.get(tc.index) ?? `index-${tc.index}`
-                : "index-0");
-            if (tc.index !== undefined) indexToKey.set(tc.index, key);
-            const existing = collectedToolCalls.get(key) ?? { name: "", args: "" };
-            if (tc.function?.name) existing.name = tc.function.name;
-            if (existing && tc.function?.arguments) {
-              existing.args += tc.function.arguments;
+            const id = typeof tc.id === "string" && tc.id ? tc.id : "";
+            let slot = -1;
+            if (id) slot = slots.findIndex((s) => s.id === id);
+            if (slot < 0 && tc.index !== undefined && byIndex.has(tc.index)) {
+              const candidate = byIndex.get(tc.index)!;
+              // The same index with a different id is a different call.
+              if (!id || !slots[candidate].id || slots[candidate].id === id) slot = candidate;
             }
-            collectedToolCalls.set(key, existing);
+            if (slot < 0) {
+              slots.push({ id, name: "", args: "" });
+              slot = slots.length - 1;
+            }
+            if (tc.index !== undefined) byIndex.set(tc.index, slot);
+            const current = slots[slot];
+            if (id && !current.id) current.id = id;
+            if (tc.function?.name && !current.name) current.name = tc.function.name;
+            else if (tc.function?.name && current.name !== tc.function.name && !current.args) current.name = tc.function.name;
+            const args = tc.function?.arguments;
+            if (typeof args === "string") current.args += args;
+            else if (args && typeof args === "object") current.args = JSON.stringify(args);
           }
         }
       }
-      if (collectedToolCalls.size) {
-        const calls: ToolCall[] = Array.from(collectedToolCalls.entries()).map(([id, v]) => ({
-          id,
-          name: v.name,
-          arguments: v.args,
-        }));
-        cb.onToolCalls?.(calls);
-      }
+      if (!finishRaw && !sawDone) throw incompleteStream();
+      const calls: ToolCall[] = slots
+        .filter((s) => s.name)
+        .map((s, i) => ({ id: s.id || `call_${i + 1}`, name: s.name, arguments: s.args }));
+      if (calls.length) cb.onToolCalls?.(calls);
+      cb.onFinish?.(openAIFinish(finishRaw, calls.length > 0));
       cb.onDone();
     } catch (e) {
       cb.onError(e as Error);
     }
+  }
+}
+
+// ── Anthropic ─────────────────────────────────────────────────────────────
+
+type AnthropicBlock = Record<string, any>;
+interface AnthropicTurn { role: "user" | "assistant"; content: AnthropicBlock[] }
+
+export function buildAnthropicTurns(messages: ChatMessage[], profile: ModelProfile): AnthropicTurn[] {
+  const turns: AnthropicTurn[] = [];
+  const push = (role: "user" | "assistant", blocks: AnthropicBlock[]) => {
+    if (!blocks.length) return;
+    const last = turns[turns.length - 1];
+    // Consecutive turns of one role are one turn. Tool results must come first in a user turn.
+    if (last && last.role === role) {
+      if (role === "user") {
+        const results = blocks.filter((b) => b.type === "tool_result");
+        const rest = blocks.filter((b) => b.type !== "tool_result");
+        const lastResults = last.content.filter((b) => b.type === "tool_result");
+        const lastRest = last.content.filter((b) => b.type !== "tool_result");
+        last.content = [...lastResults, ...results, ...lastRest, ...rest];
+      } else {
+        last.content.push(...blocks);
+      }
+      return;
+    }
+    turns.push({ role, content: blocks });
+  };
+
+  for (const m of messages) {
+    if (m.role === "system" || m.role === "developer") continue;
+    if (m.role === "user") {
+      const blocks: AnthropicBlock[] = [];
+      for (const part of mediaOf(m, profile)) {
+        if (part.type === "image") blocks.push({ type: "image", source: { type: "base64", media_type: part.mimeType ?? "image/png", data: part.data } });
+        else blocks.push({ type: "document", source: { type: "base64", media_type: "application/pdf", data: part.data }, title: part.name });
+      }
+      if (m.content?.trim()) blocks.push({ type: "text", text: m.content });
+      push("user", blocks);
+    } else if (m.role === "assistant") {
+      const blocks: AnthropicBlock[] = [];
+      if (m.content?.trim()) blocks.push({ type: "text", text: m.content });
+      for (const tc of m.tool_calls ?? []) {
+        blocks.push({ type: "tool_use", id: tc.id, name: tc.name, input: safeParse(toolCallsArgs(tc.arguments)) });
+      }
+      push("assistant", blocks);
+    } else if (m.role === "tool") {
+      const block: AnthropicBlock = {
+        type: "tool_result",
+        tool_use_id: m.tool_call_id,
+        content: m.content?.length ? m.content : "(the tool returned nothing)",
+      };
+      if (/^Tool error:/.test(m.content ?? "")) block.is_error = true;
+      push("user", [block]);
+    }
+  }
+  return turns;
+}
+
+export function buildAnthropicPayload(args: {
+  config: ProviderConfig;
+  profile: ModelProfile;
+  runtime: ProviderRuntimeOptions;
+  messages: ChatMessage[];
+  tools: ToolDefinition[];
+  maxOutput: number;
+}): any {
+  const { config, profile, runtime, messages, tools, maxOutput } = args;
+  const sys = messages.filter((m) => m.role === "system").map((m) => m.content).join("\n");
+  const turns = buildAnthropicTurns(messages, profile);
+  // Prompt caching: the system prompt, and everything up to the end of the latest turn, is read from the cache by
+  // the next request of a tool loop. Only the first-party endpoint is known to take the field.
+  const cache = /anthropic\.com/.test(config.baseUrl);
+  if (cache && turns.length) {
+    const lastBlocks = turns[turns.length - 1].content;
+    lastBlocks[lastBlocks.length - 1] = { ...lastBlocks[lastBlocks.length - 1], cache_control: { type: "ephemeral" } };
+  }
+  const payload: any = {
+    model: config.model,
+    max_tokens: maxOutput,
+    messages: turns,
+    stream: true,
+  };
+  if (sys) payload.system = cache ? [{ type: "text", text: sys, cache_control: { type: "ephemeral" } }] : sys;
+  if (runtime.temperature !== undefined && profile.acceptsTemperature) payload.temperature = Math.max(0, Math.min(1, runtime.temperature));
+  if (tools.length && profile.nativeTools) {
+    payload.tools = tools.map((t) => ({ name: t.name, description: t.description, input_schema: t.parameters }));
+  }
+  return payload;
+}
+
+function anthropicFinish(raw: string | undefined, hadToolCalls: boolean): FinishInfo {
+  if (raw === "max_tokens") return { reason: "length", raw };
+  if (hadToolCalls) return { reason: "tool_calls", raw };
+  switch (raw) {
+    case "max_tokens": return { reason: "length", raw };
+    case "refusal": return { reason: "content_filter", raw };
+    case "tool_use": return { reason: "tool_calls", raw };
+    case "end_turn":
+    case "stop_sequence":
+    case undefined: return { reason: "stop", raw };
+    default: return { reason: "other", raw };
   }
 }
 
@@ -345,80 +507,39 @@ export class OpenAIProvider extends BaseProvider {
  * Anthropic Messages API adapter. Tool use is native.
  */
 export class AnthropicProvider extends BaseProvider {
-  chat(messages: ChatMessage[], tools: ToolDefinition[], cb: StreamCallbacks): Promise<void> {
+  chat(messages: ChatMessage[], tools: ToolDefinition[], cb: StreamCallbacks, options?: ChatOptions): Promise<void> {
     const url = `${this.config.baseUrl.replace(/\/$/, "")}/messages`;
     const headers = this.getHeaders({
       "x-api-key": this.config.apiKey,
       "anthropic-version": "2023-06-01",
       "anthropic-dangerous-direct-browser-access": "true",
     });
-
-    // Convert roles: Anthropic only accepts user/assistant.
-    const sys = messages.filter((m) => m.role === "system").map((m) => m.content);
-    const turns: any[] = [];
-    for (const m of messages) {
-      if (m.role === "system") continue;
-      if (m.role === "user") {
-        turns.push({ role: "user", content: m.content });
-      } else if (m.role === "assistant") {
-        if (m.tool_calls && m.tool_calls.length) {
-          turns.push({
-            role: "assistant",
-            content: m.tool_calls.map((tc) => ({
-              type: "tool_use",
-              id: tc.id,
-              name: tc.name,
-              input: safeParse(tc.arguments),
-            })),
-          });
-        } else {
-          turns.push({ role: "assistant", content: m.content });
-        }
-      } else if (m.role === "tool") {
-        // tool result -> user message with tool_result block
-        turns.push({
-          role: "user",
-          content: [
-            {
-              type: "tool_result",
-              tool_use_id: m.tool_call_id,
-              content: m.content,
-            },
-          ],
-        });
-      }
-    }
-
-    const payload: any = {
-      model: this.config.model,
-      max_tokens: this.runtime.maxTokens ?? 4096,
-      temperature: this.runtime.temperature,
-      system: sys.join("\n"),
-      messages: turns,
-      stream: true,
-    };
-    if (tools.length) {
-      payload.tools = tools.map((t) => ({
-        name: t.name,
-        description: t.description,
-        input_schema: t.parameters,
-      }));
-    }
-
-    return this.runStream(url, headers, payload, cb);
+    const payload = buildAnthropicPayload({
+      config: this.config,
+      profile: this.profile,
+      runtime: this.runtime,
+      messages,
+      tools,
+      maxOutput: this.maxOutput(options),
+    });
+    return this.runStream(url, headers, payload, cb, options);
   }
 
   private async runStream(
     url: string,
     headers: Record<string, string>,
     payload: any,
-    cb: StreamCallbacks
+    cb: StreamCallbacks,
+    options?: ChatOptions
   ): Promise<void> {
     try {
-      let textBuf = "";
-      const toolUses = new Map<string, { name: string; args: string }>();
-      const indexToKey = new Map<number, string>();
-      for await (const data of this.streamLines(JSON.stringify(payload), url, headers)) {
+      const blocks = new Map<number, { id: string; name: string; args: string }>();
+      let inputTokens = 0;
+      let cached = 0;
+      let outputTokens = 0;
+      let stopReason: string | undefined;
+      let stopped = false;
+      for await (const data of this.streamLines(JSON.stringify(payload), url, headers, options)) {
         let json: any;
         try {
           json = JSON.parse(data);
@@ -426,45 +547,181 @@ export class AnthropicProvider extends BaseProvider {
           continue;
         }
         switch (json.type) {
-          case "content_block_delta":
-            if (json.delta?.type === "text_delta") {
-              textBuf += json.delta.text;
-              cb.onToken(json.delta.text);
-            } else if (json.delta?.type === "input_json_delta") {
-              const id =
-                json.index !== undefined
-                  ? indexToKey.get(json.index) ?? `tu-${json.index}`
-                  : "tu-0";
-              if (json.index !== undefined) indexToKey.set(json.index, id);
-              const ex = toolUses.get(id) ?? { name: "", args: "" };
-              ex.args += json.delta.partial_json;
-              toolUses.set(id, ex);
+          case "message_stop":
+            stopped = true;
+            break;
+          case "error": {
+            const err = json.error ?? {};
+            const status = err.type === "overloaded_error" ? 529 : err.type === "rate_limit_error" ? 429 : err.type === "api_error" ? 500 : undefined;
+            const error = new ProviderError(`Provider error${status ? ` (${status})` : ""}: ${String(err.message ?? JSON.stringify(err)).slice(0, 800)}`, { status, body: JSON.stringify(err) });
+            error.midStream = true;
+            throw error;
+          }
+          case "message_start": {
+            const u = json.message?.usage ?? {};
+            cached = Number(u.cache_read_input_tokens ?? 0);
+            inputTokens = Number(u.input_tokens ?? 0) + cached + Number(u.cache_creation_input_tokens ?? 0);
+            outputTokens = Number(u.output_tokens ?? 0);
+            break;
+          }
+          case "message_delta":
+            if (json.delta?.stop_reason) stopReason = json.delta.stop_reason;
+            if (json.usage?.output_tokens !== undefined) outputTokens = Number(json.usage.output_tokens);
+            if (json.usage?.input_tokens !== undefined && Number(json.usage.input_tokens) > 0) {
+              inputTokens = Number(json.usage.input_tokens) + Number(json.usage.cache_read_input_tokens ?? cached) + Number(json.usage.cache_creation_input_tokens ?? 0);
             }
             break;
           case "content_block_start":
             if (json.content_block?.type === "tool_use") {
-              const id = json.content_block.id;
-              if (json.index !== undefined) indexToKey.set(json.index, id);
-              toolUses.set(id, {
-                name: json.content_block.name,
-                args: "",
-              });
+              blocks.set(json.index ?? blocks.size, { id: json.content_block.id, name: json.content_block.name, args: "" });
+              const initial = json.content_block.input;
+              if (initial && typeof initial === "object" && Object.keys(initial).length) blocks.get(json.index ?? blocks.size - 1)!.args = JSON.stringify(initial);
+            }
+            break;
+          case "content_block_delta":
+            if (json.delta?.type === "text_delta") {
+              cb.onToken(json.delta.text);
+            } else if (json.delta?.type === "thinking_delta") {
+              if (json.delta.thinking) cb.onReasoning?.(json.delta.thinking);
+            } else if (json.delta?.type === "input_json_delta") {
+              const block = blocks.get(json.index ?? 0);
+              if (block) block.args += json.delta.partial_json ?? "";
             }
             break;
         }
       }
-      if (toolUses.size) {
-        const calls: ToolCall[] = Array.from(toolUses.entries()).map(([id, v]) => ({
-          id,
-          name: v.name,
-          arguments: v.args,
-        }));
-        cb.onToolCalls?.(calls);
-      }
+      if (!stopped && !stopReason) throw incompleteStream();
+      const calls: ToolCall[] = Array.from(blocks.values())
+        .filter((b) => b.name)
+        .map((b) => ({ id: b.id, name: b.name, arguments: b.args }));
+      if (calls.length) cb.onToolCalls?.(calls);
+      if (inputTokens || outputTokens) cb.onUsage?.({ inputTokens, outputTokens, cachedTokens: cached || undefined });
+      cb.onFinish?.(anthropicFinish(stopReason, calls.length > 0));
       cb.onDone();
     } catch (e) {
       cb.onError(e as Error);
     }
+  }
+}
+
+// ── Google Gemini ─────────────────────────────────────────────────────────
+
+const GEMINI_DROPPED_KEYS = new Set(["additionalProperties", "$schema", "$id", "$ref", "$defs", "definitions", "default", "examples", "title", "const", "patternProperties", "minLength", "maxLength", "pattern", "format", "multipleOf", "exclusiveMinimum", "exclusiveMaximum", "minItems", "maxItems", "uniqueItems", "oneOf", "allOf"]);
+
+/** Gemini takes a subset of JSON Schema and answers any other keyword with a 400. */
+export function geminiSchema(node: any): any {
+  if (Array.isArray(node)) return node.map(geminiSchema);
+  if (!node || typeof node !== "object") return node;
+  const out: Record<string, any> = {};
+  for (const [key, value] of Object.entries(node)) {
+    if (GEMINI_DROPPED_KEYS.has(key)) continue;
+    if (key === "type" && Array.isArray(value)) {
+      const types = (value as string[]).filter((t) => t !== "null");
+      out.type = types[0] ?? "string";
+      if (types.length !== (value as string[]).length) out.nullable = true;
+      continue;
+    }
+    if (key === "enum" && Array.isArray(value)) { out.enum = value.map((v) => String(v)); continue; }
+    if (key === "properties" && value && typeof value === "object") {
+      out.properties = Object.fromEntries(Object.entries(value as Record<string, any>).map(([k, v]) => [k, geminiSchema(v)]));
+      continue;
+    }
+    out[key] = key === "items" || key === "anyOf" ? geminiSchema(value) : value;
+  }
+  if (typeof out.type === "string") out.type = out.type.toLowerCase();
+  return out;
+}
+
+type GeminiPart = Record<string, any>;
+interface GeminiContent { role: "user" | "model"; parts: GeminiPart[] }
+
+export function buildGeminiContents(messages: ChatMessage[], profile: ModelProfile): GeminiContent[] {
+  const contents: GeminiContent[] = [];
+  const push = (role: "user" | "model", parts: GeminiPart[]) => {
+    if (!parts.length) return;
+    const last = contents[contents.length - 1];
+    if (last && last.role === role) last.parts.push(...parts);
+    else contents.push({ role, parts });
+  };
+  for (const m of messages) {
+    if (m.role === "system" || m.role === "developer") continue;
+    if (m.role === "user") {
+      const parts: GeminiPart[] = [];
+      for (const part of m.parts ?? []) {
+        if (!part.data) continue;
+        if ((part.type === "image" && profile.vision) || part.type === "pdf" || part.type === "audio") {
+          parts.push({ inlineData: { mimeType: part.mimeType ?? (part.type === "pdf" ? "application/pdf" : part.type === "audio" ? "audio/mpeg" : "image/png"), data: part.data } });
+        }
+      }
+      if (m.content?.trim()) parts.push({ text: m.content });
+      push("user", parts);
+    } else if (m.role === "assistant") {
+      const parts: GeminiPart[] = [];
+      if (m.content?.trim()) parts.push({ text: m.content });
+      for (const tc of m.tool_calls ?? []) {
+        const part: GeminiPart = { functionCall: { name: tc.name, args: safeParse(toolCallsArgs(tc.arguments)) } };
+        if (tc.extra?.thoughtSignature) part.thoughtSignature = tc.extra.thoughtSignature;
+        parts.push(part);
+      }
+      push("model", parts);
+    } else if (m.role === "tool") {
+      // All the results of one round go in one turn, one part per call, in the order the calls were made.
+      push("user", [{ functionResponse: { name: m.tool_name ?? m.tool_call_id ?? "tool", response: { result: m.content ?? "" } } }]);
+    }
+  }
+  return contents;
+}
+
+export function buildGeminiPayload(args: {
+  profile: ModelProfile;
+  runtime: ProviderRuntimeOptions;
+  config: ProviderConfig;
+  messages: ChatMessage[];
+  tools: ToolDefinition[];
+  maxOutput: number;
+}): any {
+  const { profile, runtime, config, messages, tools, maxOutput } = args;
+  const systemInstruction = messages.filter((m) => m.role === "system").map((m) => m.content).join("\n");
+  const generationConfig: any = { maxOutputTokens: maxOutput };
+  if (runtime.temperature !== undefined && profile.acceptsTemperature) generationConfig.temperature = Math.max(0, Math.min(2, runtime.temperature));
+  const payload: any = {
+    contents: buildGeminiContents(messages, profile),
+    generationConfig,
+  };
+  if (systemInstruction) payload.systemInstruction = { parts: [{ text: systemInstruction }] };
+  const geminiTools: any[] = [];
+  if (tools.length && profile.nativeTools) {
+    geminiTools.push({
+      functionDeclarations: tools.map((t) => {
+        const parameters = geminiSchema(t.parameters);
+        const hasProps = parameters && typeof parameters === "object" && parameters.properties && Object.keys(parameters.properties).length > 0;
+        return hasProps
+          ? { name: t.name, description: t.description, parameters }
+          : { name: t.name, description: t.description };
+      }),
+    });
+  } else if (config.supportsWebSearch) {
+    // Search grounding cannot be combined with function declarations on most Gemini models; the agent has its own web_search tool.
+    geminiTools.push({ googleSearch: {} });
+  }
+  if (geminiTools.length) payload.tools = geminiTools;
+  return payload;
+}
+
+function geminiFinish(raw: string | undefined, hadToolCalls: boolean): FinishInfo {
+  if (raw === "MAX_TOKENS") return { reason: "length", raw };
+  if (hadToolCalls) return { reason: "tool_calls", raw };
+  switch (raw) {
+    case "MAX_TOKENS": return { reason: "length", raw };
+    case "SAFETY":
+    case "RECITATION":
+    case "BLOCKLIST":
+    case "PROHIBITED_CONTENT":
+    case "SPII": return { reason: "content_filter", raw };
+    case "MALFORMED_FUNCTION_CALL": return { reason: "malformed", raw };
+    case "STOP":
+    case undefined: return { reason: "stop", raw };
+    default: return { reason: "other", raw };
   }
 }
 
@@ -472,110 +729,78 @@ export class AnthropicProvider extends BaseProvider {
  * Google Gemini adapter (generativelanguage API). Tool use + web search supported.
  */
 export class GeminiProvider extends BaseProvider {
-  chat(messages: ChatMessage[], tools: ToolDefinition[], cb: StreamCallbacks): Promise<void> {
-    // Gemini path: baseUrl/v1beta/models/{model}:streamGenerateContent?alt=sse&key=...
-    const model = this.config.model;
-    const url = `${this.config.baseUrl.replace(/\/$/, "")}/models/${model}:streamGenerateContent?alt=sse&key=${this.config.apiKey}`;
-
-    const contents: any[] = [];
-    let systemInstruction = "";
-    for (const m of messages) {
-      if (m.role === "system") {
-        systemInstruction += m.content + "\n";
-        continue;
-      }
-      if (m.role === "user") {
-        contents.push({ role: "user", parts: [{ text: m.content }] });
-      } else if (m.role === "assistant") {
-        if (m.tool_calls && m.tool_calls.length) {
-          contents.push({
-            role: "model",
-            parts: m.tool_calls.map((tc) => ({
-              functionCall: { name: tc.name, args: safeParse(tc.arguments) },
-            })),
-          });
-        } else {
-          contents.push({ role: "model", parts: [{ text: m.content }] });
-        }
-      } else if (m.role === "tool") {
-        contents.push({
-          role: "user",
-          parts: [
-            {
-              functionResponse: {
-                name: m.tool_name ?? m.tool_call_id ?? "tool",
-                response: { result: m.content },
-              },
-            },
-          ],
-        });
-      }
-    }
-
-    const payload: any = {
-      contents,
-      systemInstruction: systemInstruction
-        ? { parts: [{ text: systemInstruction }] }
-        : undefined,
-      generationConfig: {
-        maxOutputTokens: this.runtime.maxTokens,
-        temperature: this.runtime.temperature,
-      },
-    };
-
-    const geminiTools: any[] = [];
-    if (tools.length) {
-      geminiTools.push({
-        functionDeclarations: tools.map((t) => ({
-          name: t.name,
-          description: t.description,
-          parameters: t.parameters,
-        })),
-      });
-    }
-    if (this.config.supportsWebSearch) {
-      geminiTools.push({ googleSearch: {} });
-    }
-    if (geminiTools.length) payload.tools = geminiTools;
-
-    return this.runStream(url, this.getHeaders(), payload, cb);
+  chat(messages: ChatMessage[], tools: ToolDefinition[], cb: StreamCallbacks, options?: ChatOptions): Promise<void> {
+    // Gemini path: baseUrl/models/{model}:streamGenerateContent?alt=sse, the key in a header (a key in the URL ends up in logs and error messages).
+    const model = this.config.model.replace(/^models\//, "");
+    const url = `${this.config.baseUrl.replace(/\/$/, "")}/models/${model}:streamGenerateContent?alt=sse`;
+    const payload = buildGeminiPayload({
+      profile: this.profile,
+      runtime: this.runtime,
+      config: this.config,
+      messages,
+      tools,
+      maxOutput: this.maxOutput(options),
+    });
+    return this.runStream(url, this.getHeaders({ "x-goog-api-key": this.config.apiKey }), payload, cb, options);
   }
 
   private async runStream(
     url: string,
     headers: Record<string, string>,
     payload: any,
-    cb: StreamCallbacks
+    cb: StreamCallbacks,
+    options?: ChatOptions
   ): Promise<void> {
     try {
-      const toolCalls = new Map<string, { name: string; args: string }>();
-      for await (const data of this.streamLines(JSON.stringify(payload), url, headers)) {
+      const calls: ToolCall[] = [];
+      let finishRaw: string | undefined;
+      let usage: any;
+      for await (const data of this.streamLines(JSON.stringify(payload), url, headers, options)) {
         let json: any;
         try {
           json = JSON.parse(data);
         } catch {
           continue;
         }
-        const parts = json.candidates?.[0]?.content?.parts ?? [];
-        for (const part of parts) {
-          if (part.text) cb.onToken(part.text);
+        if (json.error) {
+          const err = json.error;
+          const status = typeof err.code === "number" ? err.code : undefined;
+          const error = new ProviderError(`Provider error${status ? ` (${status})` : ""}: ${String(err.message ?? JSON.stringify(err)).slice(0, 800)}`, { status, body: JSON.stringify(err) });
+          error.midStream = true;
+          throw error;
+        }
+        if (json.promptFeedback?.blockReason) {
+          throw new ProviderError(`Provider error (400): The prompt was blocked (${json.promptFeedback.blockReason}).`, { status: 400, body: JSON.stringify(json.promptFeedback) });
+        }
+        if (json.usageMetadata) usage = json.usageMetadata;
+        const candidate = json.candidates?.[0];
+        if (candidate?.finishReason) finishRaw = candidate.finishReason;
+        for (const part of candidate?.content?.parts ?? []) {
           if (part.functionCall) {
-            const id = `fc-${part.functionCall.name}`;
-            toolCalls.set(id, {
+            const call: ToolCall = {
+              id: `gemini-call-${calls.length + 1}`,
               name: part.functionCall.name,
-              args: JSON.stringify(part.functionCall.args ?? {}),
-            });
+              arguments: JSON.stringify(part.functionCall.args ?? {}),
+            };
+            if (part.thoughtSignature) call.extra = { thoughtSignature: part.thoughtSignature };
+            calls.push(call);
+          } else if (typeof part.text === "string" && part.text) {
+            if (part.thought === true) cb.onReasoning?.(part.text);
+            else cb.onToken(part.text);
           }
         }
       }
-      if (toolCalls.size) {
-        const calls: ToolCall[] = Array.from(toolCalls.entries()).map(([id, v]) => ({
-          id,
-          name: v.name,
-          arguments: v.args,
-        }));
-        cb.onToolCalls?.(calls);
+      if (!finishRaw) throw incompleteStream();
+      if (calls.length) cb.onToolCalls?.(calls);
+      if (usage) {
+        cb.onUsage?.({
+          inputTokens: Number(usage.promptTokenCount ?? 0),
+          outputTokens: Number(usage.candidatesTokenCount ?? 0) + Number(usage.thoughtsTokenCount ?? 0),
+          cachedTokens: Number(usage.cachedContentTokenCount ?? 0) || undefined,
+          reasoningTokens: Number(usage.thoughtsTokenCount ?? 0) || undefined,
+        });
       }
+      cb.onFinish?.(geminiFinish(finishRaw, calls.length > 0));
       cb.onDone();
     } catch (e) {
       cb.onError(e as Error);
@@ -583,9 +808,124 @@ export class GeminiProvider extends BaseProvider {
   }
 }
 
+// ── Ollama, spoken natively ───────────────────────────────────────────────
+// The OpenAI-compatible endpoint Ollama offers has no way to say how long the
+// context should be, and Ollama's own default is a few thousand tokens: a
+// long conversation (or just the tool definitions) is cut from the front
+// without a word, and the model carries on without its instructions. The
+// native endpoint takes `num_ctx`.
+
+export function ollamaOrigin(baseUrl: string): string {
+  return baseUrl.replace(/\/+$/, "").replace(/\/(v1|api)$/, "");
+}
+
+export function buildOllamaPayload(args: {
+  config: ProviderConfig;
+  profile: ModelProfile;
+  runtime: ProviderRuntimeOptions;
+  messages: ChatMessage[];
+  tools: ToolDefinition[];
+  maxOutput: number;
+}): any {
+  const { config, profile, runtime, messages, tools, maxOutput } = args;
+  const out: any[] = [];
+  for (const m of messages) {
+    if (m.role === "assistant" && m.tool_calls?.length) {
+      out.push({
+        role: "assistant",
+        content: m.content ?? "",
+        tool_calls: m.tool_calls.map((tc) => ({ function: { name: tc.name, arguments: safeParse(toolCallsArgs(tc.arguments)) } })),
+      });
+    } else if (m.role === "tool") {
+      out.push({ role: "tool", content: m.content ?? "", tool_name: m.tool_name });
+    } else if (m.role === "user") {
+      const images = (m.parts ?? []).filter((p) => p.type === "image" && p.data && profile.vision).map((p) => p.data);
+      out.push(images.length ? { role: "user", content: m.content ?? "", images } : { role: "user", content: m.content ?? "" });
+    } else {
+      out.push({ role: m.role === "developer" ? "system" : m.role, content: m.content ?? "" });
+    }
+  }
+  const options: Record<string, any> = {
+    num_ctx: profile.numCtx ?? profile.contextWindow,
+    num_predict: maxOutput,
+  };
+  if (runtime.temperature !== undefined && profile.acceptsTemperature) options.temperature = runtime.temperature;
+  for (const [key, value] of Object.entries(runtime.modelOptions ?? {})) {
+    if (key === "max_tokens" || key === "max_completion_tokens" || key === "temperature") continue;
+    options[key === "repetition_penalty" ? "repeat_penalty" : key] = value;
+  }
+  const payload: any = { model: config.model, messages: out, stream: true, options };
+  if (tools.length && profile.nativeTools) {
+    payload.tools = tools.map((t) => ({ type: "function", function: { name: t.name, description: t.description, parameters: t.parameters } }));
+  }
+  return payload;
+}
+
+export class OllamaProvider extends BaseProvider {
+  async chat(messages: ChatMessage[], tools: ToolDefinition[], cb: StreamCallbacks, options?: ChatOptions): Promise<void> {
+    const url = `${ollamaOrigin(this.config.baseUrl)}/api/chat`;
+    const payload = buildOllamaPayload({
+      config: this.config,
+      profile: this.profile,
+      runtime: this.runtime,
+      messages,
+      tools,
+      maxOutput: this.maxOutput(options),
+    });
+    let emitted = false;
+    try {
+      const calls: ToolCall[] = [];
+      let doneReason: string | undefined;
+      let finished = false;
+      let usage: TokenUsage | undefined;
+      // Ollama itself takes no key; a proxy in front of it may.
+    const headers = this.getHeaders(this.config.apiKey && this.config.apiKey !== "ollama" ? { Authorization: `Bearer ${this.config.apiKey}` } : {});
+    for await (const data of this.streamLines(JSON.stringify(payload), url, headers, options, { ndjson: true })) {
+        let json: any;
+        try {
+          json = JSON.parse(data);
+        } catch {
+          continue;
+        }
+        if (json.error) {
+          const error = new ProviderError(`Provider error (${json.status_code ?? 500}): ${String(json.error).slice(0, 800)}`, { status: json.status_code ?? 500, body: String(json.error) });
+          error.midStream = emitted;
+          throw error;
+        }
+        const message = json.message;
+        if (message?.thinking) { emitted = true; cb.onReasoning?.(message.thinking); }
+        if (message?.content) { emitted = true; cb.onToken(message.content); }
+        for (const tc of message?.tool_calls ?? []) {
+          const fn = tc.function ?? {};
+          if (!fn.name) continue;
+          emitted = true;
+          calls.push({ id: typeof tc.id === "string" && tc.id ? tc.id : `ollama-call-${calls.length + 1}`, name: fn.name, arguments: toolCallsArgs(fn.arguments ?? {}) });
+        }
+        if (json.done) {
+          finished = true;
+          doneReason = json.done_reason;
+          if (json.prompt_eval_count !== undefined || json.eval_count !== undefined) {
+            usage = { inputTokens: Number(json.prompt_eval_count ?? 0), outputTokens: Number(json.eval_count ?? 0) };
+          }
+        }
+      }
+      if (!finished) throw incompleteStream();
+      if (calls.length) cb.onToolCalls?.(calls);
+      if (usage) cb.onUsage?.(usage);
+      cb.onFinish?.(doneReason === "length" ? { reason: "length", raw: doneReason } : calls.length ? { reason: "tool_calls", raw: doneReason } : { reason: "stop", raw: doneReason });
+      cb.onDone();
+    } catch (e: any) {
+      // Not a real Ollama (an OpenAI-compatible server on the same port, or a proxy): speak the other protocol.
+      if (!emitted && e instanceof ProviderError && (e.status === 404 || e.status === 405)) {
+        return new OpenAIProvider(this.config, this.runtime).chat(messages, tools, cb, options);
+      }
+      cb.onError(e);
+    }
+  }
+}
 
 export class CloudflareProvider extends OpenAIProvider {
-  async chat(messages: ChatMessage[], tools: ToolDefinition[], cb: StreamCallbacks): Promise<void> {
+  async chat(messages: ChatMessage[], tools: ToolDefinition[], cb: StreamCallbacks, requestOptions?: ChatOptions): Promise<void> {
     const accountId = this.config.cloudflareAccountId || "";
     if (!accountId) throw new Error("Cloudflare Account ID is required.");
     if (!this.config.apiKey) throw new Error("Cloudflare API Token is required.");
@@ -661,7 +1001,7 @@ export class CloudflareProvider extends OpenAIProvider {
         const visionPayload = {
           prompt: prompt || "Describe this image in detail.",
           image: imagePart.data,
-          max_tokens: this.runtime.maxTokens,
+          max_tokens: this.maxOutput(requestOptions),
           temperature: this.runtime.temperature,
           ...options,
         };
@@ -707,7 +1047,7 @@ export class CloudflareProvider extends OpenAIProvider {
         model,
       }, this.runtime);
       const supportedTools = !schema || inputKeys.has("tools") ? tools : [];
-      return this.runTextWithFallback(compatible, messages, supportedTools, cb, model, inputKeys, options);
+      return this.runTextWithFallback(compatible, messages, supportedTools, cb, model, inputKeys, options, requestOptions);
     } catch (error: any) {
       cb.onError(this.normalizeError(error));
     }
@@ -720,7 +1060,8 @@ export class CloudflareProvider extends OpenAIProvider {
     cb: StreamCallbacks,
     model: string,
     inputKeys: Set<string>,
-    options: Record<string, string | number | boolean>
+    options: Record<string, string | number | boolean>,
+    requestOptions?: ChatOptions
   ): Promise<void> {
     return await new Promise<void>((resolve) => {
       let emitted = false;
@@ -730,6 +1071,8 @@ export class CloudflareProvider extends OpenAIProvider {
         onToken: (token) => { emitted = true; cb.onToken(token); },
         onReasoning: (token) => cb.onReasoning?.(token),
         onToolCalls: (calls) => cb.onToolCalls?.(calls),
+        onUsage: (usage) => cb.onUsage?.(usage),
+        onFinish: (info) => cb.onFinish?.(info),
         onDone: () => { cb.onDone(); finish(); },
         onError: async (error) => {
           const message = String(error?.message ?? error);
@@ -748,7 +1091,7 @@ export class CloudflareProvider extends OpenAIProvider {
             const candidates: Array<Record<string, unknown>> = [];
             if (!inputKeys.size || inputKeys.has("messages")) {
               const payload: Record<string, unknown> = { messages: nativeMessages, ...allowedOptions };
-              if (inputKeys.has("max_tokens") && this.runtime.maxTokens) payload.max_tokens = this.runtime.maxTokens;
+              if (inputKeys.has("max_tokens")) payload.max_tokens = this.maxOutput(requestOptions);
               if (inputKeys.has("temperature") && this.runtime.temperature !== undefined) payload.temperature = this.runtime.temperature;
               candidates.push(payload);
             }
@@ -786,7 +1129,7 @@ export class CloudflareProvider extends OpenAIProvider {
           }
           finish();
         },
-      });
+      }, requestOptions);
     });
   }
 
@@ -898,8 +1241,9 @@ export function createProvider(
     case "openai-compatible":
     case "custom":
     case "openrouter":
-    case "ollama":
       return new OpenAIProvider(config, runtime);
+    case "ollama":
+      return new OllamaProvider(config, runtime);
     case "cloudflare":
       return new CloudflareProvider(config, runtime);
     case "anthropic":
@@ -975,13 +1319,5 @@ export async function probeModels(config: ProviderConfig): Promise<{
     return { ok: true, models };
   } catch (e: any) {
     return { ok: false, models: [], error: e?.message ?? String(e) };
-  }
-}
-
-function safeParse(s: string): any {
-  try {
-    return JSON.parse(s || "{}");
-  } catch {
-    return {};
   }
 }
