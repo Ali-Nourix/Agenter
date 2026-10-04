@@ -48,6 +48,9 @@ const base = { providerId: "p", providerType: "openai-compatible", baseUrl: "htt
   eq(op.maxOutput, 32000, "opus 4 writes less");
   const old = h.resolveModelProfile({ ...base, providerType: "anthropic", model: "claude-3-haiku-20240307" });
   eq(old.maxOutput, 4096, "claude 3 haiku");
+  const gemma = (id) => h.resolveModelProfile({ ...base, model: id }).contextWindow;
+  eq([gemma("@cf/google/gemma-4-26b-a4b-it"), gemma("gemma-3-12b-it"), gemma("gemma3:27b")], [128000, 128000, 128000], "Gemma 3 and later read 128k, not 8k");
+  eq([gemma("gemma-3n-e4b"), gemma("@hf/google/gemma-7b-it"), gemma("gemma-2-9b-it"), gemma("gemma-2b")], [32768, 8192, 8192, 8192], "…while the first generations and 3n keep their own windows");
   const gem = h.resolveModelProfile({ ...base, providerType: "gemini", model: "gemini-2.5-pro" });
   eq([gem.contextWindow, gem.maxOutput, gem.pdfNative], [1048576, 65536, true], "gemini 2.5 pro");
   const ds = h.resolveModelProfile({ ...base, model: "deepseek-reasoner" });

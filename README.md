@@ -400,7 +400,7 @@ DOM the plugin builds:
 | --- | --- | --- |
 | `test/ui-preview.html` | The docked chat panel | `?light`, `?floating` |
 | `test/ctx-preview.html` | The contextual popover | `?light`, `?chatting`, `?quoting` |
-| `test/meter-preview.html` | The context bar, its popover, notices, attachment chips | `?light`, `?open` |
+| `test/meter-preview.html` | The context bar, its popover, notices, attachment chips — with Obsidian's own button rules from `test/obsidian-controls.css`, which a bare browser lacks | `?light`, `?open` |
 
 Open either one in a browser to check a style change without reloading
 Obsidian, or regenerate the images in this README:

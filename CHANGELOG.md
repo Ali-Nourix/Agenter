@@ -1,5 +1,27 @@
 # Changelog
 
+## 1.8.2 - The context bar and its details, as Obsidian draws them
+
+- Obsidian styles every `button:not(.clickable-icon)` with a fill, an inset
+  border and a 30px height, and that outweighs a plain class — so in the app the
+  context bar was drawn as a boxed button with a heavy focus ring, **Copy harness
+  report** as a bordered button, and the copy chips as empty boxes. The plugin's
+  buttons now carry enough weight to win: the bar is a bare track and a label,
+  the link is a link, the actions line up, and keyboard focus gets a plain
+  outline (not a ring left behind by a mouse click).
+- The details popover puts the model on its own line under the title, so
+  **Context window** no longer wraps in two when the model's name is long.
+- The estimate fill on the bar is solid and slightly dimmer, instead of a
+  hatched pattern (the `≈` already says it is an estimate), and the track is a
+  pixel thicker.
+- Gemma 3 and later models are taken to read 128k tokens (3n: 32k) instead of
+  falling into the 8k of the first generations, so a Gemma 4 on Workers AI is no
+  longer limited to answers of about 4k. A provider that reports its own window,
+  or an error that names it, still wins over this.
+- `test/obsidian-controls.css` reproduces Obsidian's default button and slider
+  rules, and the context-bar preview loads it, so a preview no longer hides the
+  places where the app's own styles win.
+
 ## 1.8.1 - The model menu's sliders
 
 - Redrew the sliders in the model menu. Obsidian's own slider is a hairline with

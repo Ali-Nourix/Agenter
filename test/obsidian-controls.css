@@ -1,0 +1,60 @@
+/* ---------------------------------------------------------------------------
+   Obsidian's default look for buttons, number fields and sliders.
+
+   A plain browser draws a <button> with no styles at all, so a preview without
+   this file hides every place where the app's own rules win over the plugin's:
+   Obsidian styles `button:not(.clickable-icon)`, which outweighs a bare class,
+   and it gives every button a 30px height, a fill and an inset border. Load
+   this after obsidian-theme.css and before styles.css, the order the app uses.
+   --------------------------------------------------------------------------- */
+:root {
+  --input-height: 30px;
+  --button-radius: 6px;
+  --input-font-weight: 400;
+  --interactive-normal: #2a2a2a;
+  --interactive-hover: #363636;
+  --background-modifier-border-focus: var(--interactive-accent);
+  --input-shadow: inset 0 0 0 1px var(--background-modifier-border);
+  --input-shadow-hover: inset 0 0 0 1px var(--background-modifier-border-hover);
+}
+body.light {
+  --interactive-normal: #f2f3f5;
+  --interactive-hover: #e9eaed;
+}
+button:not(.clickable-icon) {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: var(--input-height);
+  padding: 4px 12px;
+  border: 0;
+  border-radius: var(--button-radius);
+  color: var(--text-normal);
+  background-color: var(--interactive-normal);
+  box-shadow: var(--input-shadow);
+  font-family: inherit;
+  font-size: var(--font-ui-small);
+  font-weight: var(--input-font-weight);
+  white-space: nowrap;
+  cursor: pointer;
+}
+button:not(.clickable-icon):hover { background-color: var(--interactive-hover); box-shadow: var(--input-shadow-hover); }
+button:focus-visible { box-shadow: 0 0 0 3px var(--background-modifier-border-focus); }
+input[type="range"] {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 3px;
+  padding: 0;
+  border: 0;
+  border-radius: 3px;
+  background: var(--background-modifier-border);
+}
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 18px;
+  height: 18px;
+  border: 1px solid var(--background-modifier-border-hover);
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 1px rgba(0, 0, 0, 0.05), 0 2px 4px rgba(0, 0, 0, 0.15);
+}

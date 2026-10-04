@@ -124,7 +124,9 @@ const KNOWN: KnownModel[] = [
   { match: /gemini-2\.0/, context: 1_048_576, output: 8_192, family: "gemini", vision: true },
   { match: /gemini-(2\.5|3)/, context: 1_048_576, output: 65_536, family: "gemini", reasoning: true, vision: true },
   { match: /gemini/, context: 1_048_576, output: 8_192, family: "gemini", vision: true },
-  { match: /gemma-?3/, context: 128_000, output: 8_192, family: "gemini", vision: true },
+  { match: /gemma-?3n/, context: 32_768, output: 8_192, family: "gemini" },
+  // Gemma 3 and everything after it reads 128k; only the first two generations were limited to 8k.
+  { match: /gemma-?([3-9]|\d{2})(?!\d|b\b)/, context: 128_000, output: 8_192, family: "gemini", vision: true },
   // DeepSeek
   { match: /deepseek-reasoner|deepseek-r1|deepseek.*(think|reason)/, context: 128_000, output: 64_000, family: "deepseek", reasoning: true },
   { match: /deepseek/, context: 128_000, output: 8_192, family: "deepseek" },

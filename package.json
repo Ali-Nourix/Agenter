@@ -1,6 +1,6 @@
 {
   "name": "agenter",
-  "version": "1.8.1",
+  "version": "1.8.2",
   "description": "AI agent plugin for Obsidian with multi-provider support and floating chat.",
   "main": "main.js",
   "scripts": {

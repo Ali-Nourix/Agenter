@@ -3091,7 +3091,7 @@
   white-space: nowrap;
 }
 .agenter-attachment-icon { display: inline-flex; color: var(--interactive-accent); }
-.agenter-attachment-chip button {
+.agenter-attachment-strip .agenter-attachment-chip button {
   display: grid;
   width: 24px;
   height: 24px;
@@ -3646,7 +3646,7 @@
 
 /* A small copy button at the corner of a message: there when it is looked for. */
 .agenter-msg { position: relative; }
-.agenter-msg-copy {
+.agenter-msg button.agenter-msg-copy {
   position: absolute;
   inset-block-end: -11px;
   inset-inline-end: 10px;
@@ -3666,18 +3666,18 @@
   cursor: pointer;
   transition: opacity 0.12s ease, color 0.12s ease, background-color 0.12s ease;
 }
-.agenter-msg:hover .agenter-msg-copy,
-.agenter-msg:focus-within .agenter-msg-copy,
-.agenter-msg-copy:focus-visible { opacity: 1; }
-.agenter-msg-copy:hover { color: var(--text-normal); background: var(--background-secondary); }
-.agenter-msg-copy:focus-visible { outline: 2px solid var(--interactive-accent); outline-offset: 1px; }
-.agenter-msg-copy.is-copied { color: var(--color-green, #3fa66b); opacity: 1; }
-.agenter-msg-copy.is-failed { color: var(--text-error); opacity: 1; }
+.agenter-msg:hover button.agenter-msg-copy,
+.agenter-msg:focus-within button.agenter-msg-copy,
+.agenter-msg button.agenter-msg-copy:focus-visible { opacity: 1; }
+.agenter-msg button.agenter-msg-copy:hover { color: var(--text-normal); background: var(--background-secondary); box-shadow: 0 2px 6px rgba(0, 0, 0, 0.16); }
+.agenter-msg button.agenter-msg-copy:focus-visible { outline: 2px solid var(--interactive-accent); outline-offset: 1px; box-shadow: 0 2px 6px rgba(0, 0, 0, 0.16); }
+.agenter-msg button.agenter-msg-copy.is-copied { color: var(--color-green, #3fa66b); opacity: 1; }
+.agenter-msg button.agenter-msg-copy.is-failed { color: var(--text-error); opacity: 1; }
 .agenter-msg-copy .svg-icon { width: 14px; height: 14px; }
-@media (hover: none) { .agenter-msg-copy { opacity: 0.7; } }
+@media (hover: none) { .agenter-msg button.agenter-msg-copy { opacity: 0.7; } }
 
 .agenter-ctx-row.is-assistant { position: relative; }
-.agenter-ctx-copy {
+.agenter-ctx-row button.agenter-ctx-copy {
   display: inline-grid;
   width: 22px;
   height: 22px;
@@ -3691,8 +3691,8 @@
   box-shadow: none;
   cursor: pointer;
 }
-.agenter-ctx-copy:hover,
-.agenter-ctx-copy:focus-visible { color: var(--text-normal); background: var(--background-modifier-hover); }
+.agenter-ctx-row button.agenter-ctx-copy:hover,
+.agenter-ctx-row button.agenter-ctx-copy:focus-visible { color: var(--text-normal); background: var(--background-modifier-hover); box-shadow: none; }
 .agenter-ctx-copy .svg-icon { width: 13px; height: 13px; }
 
 /* ============================================================
@@ -3730,9 +3730,10 @@
 .agenter-ctxmeter { position: relative; display: block; }
 .agenter-ctxmeter.is-hidden,
 .agenter-ctxmeter.is-empty { display: none; }
-.agenter-ctxmeter-btn {
+.agenter-ctxmeter > button.agenter-ctxmeter-btn {
   display: flex;
   width: 100%;
+  height: auto;
   min-height: 24px;
   align-items: center;
   gap: 9px;
@@ -3748,12 +3749,14 @@
   text-align: start;
   cursor: pointer;
 }
-.agenter-ctxmeter-btn:hover { color: var(--text-normal); background: var(--background-modifier-hover); }
-.agenter-ctxmeter-btn:focus-visible { outline: 2px solid var(--interactive-accent); outline-offset: 1px; }
+.agenter-ctxmeter > button.agenter-ctxmeter-btn:hover,
+.agenter-ctxmeter > button.agenter-ctxmeter-btn[aria-expanded="true"] { color: var(--text-normal); background: var(--background-modifier-hover); box-shadow: none; }
+.agenter-ctxmeter > button.agenter-ctxmeter-btn:focus { box-shadow: none; outline: none; }
+.agenter-ctxmeter > button.agenter-ctxmeter-btn:focus-visible { box-shadow: none; outline: 2px solid var(--interactive-accent); outline-offset: 1px; }
 .agenter-ctxmeter-track {
   position: relative;
   flex: 1;
-  height: 5px;
+  height: 6px;
   min-width: 40px;
   overflow: visible;
   border-radius: 999px;
@@ -3768,10 +3771,7 @@
   background: var(--agenter-meter, var(--interactive-accent));
   transition: width 0.25s ease, background-color 0.25s ease;
 }
-.agenter-ctxmeter.is-estimated .agenter-ctxmeter-fill {
-  background-image: repeating-linear-gradient(135deg, rgba(255,255,255,0.28) 0 3px, transparent 3px 6px);
-  background-color: var(--agenter-meter, var(--interactive-accent));
-}
+.agenter-ctxmeter.is-estimated .agenter-ctxmeter-fill { opacity: 0.72; }
 .agenter-ctxmeter-mark {
   position: absolute;
   inset-block: -2px;
@@ -3829,9 +3829,9 @@
   user-select: text;
 }
 .agenter-ctxmeter.is-compact .agenter-ctxmeter-pop { inset-inline: auto 0; min-width: 260px; }
-.agenter-ctxmeter-pop-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
-.agenter-ctxmeter-pop-title { font-size: 13px; }
-.agenter-ctxmeter-pop-model { overflow: hidden; color: var(--text-faint); text-overflow: ellipsis; white-space: nowrap; font-size: 11px; }
+.agenter-ctxmeter-pop-head { display: flex; min-width: 0; flex-direction: column; gap: 1px; }
+.agenter-ctxmeter-pop-title { font-size: 13px; line-height: 1.3; }
+.agenter-ctxmeter-pop-model { min-width: 0; overflow: hidden; color: var(--text-faint); text-overflow: ellipsis; white-space: nowrap; font-size: 11px; }
 .agenter-ctxmeter-pop-big { font-size: 13px; font-weight: 600; font-variant-numeric: tabular-nums; }
 .agenter-ctxmeter-pop-note { color: var(--text-muted); font-size: 11px; }
 .agenter-ctxmeter-stack { display: flex; height: 8px; overflow: hidden; border-radius: 999px; background: var(--background-modifier-border); }
@@ -3852,8 +3852,10 @@
 .agenter-ctxmeter-facts dt { color: var(--text-muted); }
 .agenter-ctxmeter-facts dd { margin: 0; }
 .agenter-ctxmeter-actions { display: flex; flex-wrap: wrap; gap: 6px; }
-.agenter-ctxmeter-action {
-  padding: 4px 10px;
+.agenter-ctxmeter-actions > button.agenter-ctxmeter-action {
+  height: auto;
+  min-height: 28px;
+  padding: 4px 11px;
   border: 1px solid var(--background-modifier-border);
   border-radius: 6px;
   color: var(--text-normal);
@@ -3862,10 +3864,14 @@
   font-size: 12px;
   cursor: pointer;
 }
-.agenter-ctxmeter-action:hover:not(:disabled) { background: var(--background-modifier-hover); }
-.agenter-ctxmeter-action:disabled { opacity: 0.45; cursor: default; }
-.agenter-ctxmeter-link {
+.agenter-ctxmeter-actions > button.agenter-ctxmeter-action:hover:not(:disabled) { background: var(--background-modifier-hover); box-shadow: none; }
+.agenter-ctxmeter-actions > button.agenter-ctxmeter-action:focus-visible { box-shadow: none; outline: 2px solid var(--interactive-accent); outline-offset: 1px; }
+.agenter-ctxmeter-actions > button.agenter-ctxmeter-action:disabled { opacity: 0.45; cursor: default; }
+.agenter-ctxmeter-pop > button.agenter-ctxmeter-link {
   align-self: flex-start;
+  display: inline;
+  height: auto;
+  min-height: 0;
   padding: 0;
   border: 0;
   color: var(--text-muted);
@@ -3875,7 +3881,8 @@
   text-decoration: underline;
   cursor: pointer;
 }
-.agenter-ctxmeter-link:hover { color: var(--text-normal); }
+.agenter-ctxmeter-pop > button.agenter-ctxmeter-link:hover { color: var(--text-normal); background: transparent; box-shadow: none; }
+.agenter-ctxmeter-pop > button.agenter-ctxmeter-link:focus-visible { box-shadow: none; outline: 2px solid var(--interactive-accent); outline-offset: 2px; }
 
 /* ============================================================
    Attachments: what the model will be able to do with each
@@ -3893,7 +3900,7 @@
 .agenter-attachment-plan { padding: 0 5px; border-radius: 4px; background: var(--background-modifier-hover); font-size: 10px; }
 
 /* Model menu: the "Auto" links and hints. */
-.agenter-model-auto {
+.agenter-model-control button.agenter-model-auto {
   padding: 1px 7px;
   border: 1px solid var(--background-modifier-border);
   border-radius: 5px;
@@ -3903,7 +3910,7 @@
   font-size: 11px;
   cursor: pointer;
 }
-.agenter-model-auto:hover { color: var(--text-normal); background: var(--background-modifier-hover); }
+.agenter-model-control button.agenter-model-auto:hover { color: var(--text-normal); background: var(--background-modifier-hover); box-shadow: none; }
 .agenter-model-hint { margin-top: 3px; color: var(--text-faint); font-size: 11px; line-height: 1.4; }
 
 /* Model menu, v1.8.1: rows that line up, and sliders drawn from the theme.
@@ -3914,23 +3921,23 @@
 .agenter-model-control-top > label { flex: 1 1 auto; min-width: 0; line-height: 1.25; }
 .agenter-model-control-top > input[type="number"],
 .agenter-model-control-top > select,
-.agenter-model-control-top > .agenter-model-auto { flex: 0 0 auto; }
+.agenter-model-control-top > button.agenter-model-auto { flex: 0 0 auto; }
 .agenter-model-control input.agenter-model-number { width: 96px; font-variant-numeric: tabular-nums; }
 .agenter-model-control input.agenter-model-number::placeholder { color: var(--text-faint); }
-.agenter-model-control-top > .agenter-model-auto {
+.agenter-model-control-top > button.agenter-model-auto {
   box-sizing: border-box;
   height: 30px;
   padding: 0 10px;
   border-radius: 8px;
   color: var(--text-muted);
 }
-.agenter-model-control-top > .agenter-model-auto.is-active {
+.agenter-model-control-top > button.agenter-model-auto.is-active {
   color: var(--text-accent);
   border-color: color-mix(in srgb, var(--interactive-accent) 55%, var(--background-modifier-border));
   background: color-mix(in srgb, var(--interactive-accent) 12%, transparent);
 }
-.agenter-model-actions button { color: var(--text-normal); box-shadow: none; cursor: pointer; }
-.agenter-model-actions button:hover { background: var(--background-modifier-hover); }
+.agenter-model-popover .agenter-model-actions button { color: var(--text-normal); box-shadow: none; cursor: pointer; }
+.agenter-model-popover .agenter-model-actions button:hover { background: var(--background-modifier-hover); box-shadow: none; }
 
 .agenter-model-control input[type="range"].agenter-model-range {
   -webkit-appearance: none;
