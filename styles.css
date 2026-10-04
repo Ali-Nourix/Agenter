@@ -3981,3 +3981,25 @@
 @media (prefers-reduced-motion: reduce) {
   .agenter-model-control input[type="range"].agenter-model-range::-webkit-slider-thumb { transition: none; }
 }
+
+/* After an error that was only the connection: one click picks the work up again. */
+.agenter-resume-row { display: flex; justify-content: center; padding: 2px 0 4px; }
+.agenter-resume-row button.agenter-resume {
+  display: flex;
+  height: auto;
+  min-height: 28px;
+  margin: 0;
+  padding: 4px 14px;
+  align-items: center;
+  border: 1px solid color-mix(in srgb, var(--interactive-accent) 55%, var(--background-modifier-border));
+  border-radius: 8px;
+  color: var(--text-accent);
+  background: color-mix(in srgb, var(--interactive-accent) 12%, transparent);
+  box-shadow: none;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+}
+.agenter-resume-row button.agenter-resume:hover:not(:disabled) { background: color-mix(in srgb, var(--interactive-accent) 22%, transparent); box-shadow: none; }
+.agenter-resume-row button.agenter-resume:focus-visible { box-shadow: none; outline: 2px solid var(--interactive-accent); outline-offset: 2px; }
+.agenter-resume-row button.agenter-resume:disabled { opacity: 0.5; cursor: default; }

@@ -1,5 +1,6 @@
 import { App, TFile, TFolder, requestUrl } from "obsidian";
 import { ToolDefinition, ToolCall } from "./api";
+import { PdfJsLike, PdfLibrary, ReadPdfArgs, ReadPdfEnv, readPdfTool } from "./harness/pdf";
 
 export interface ToolResult {
   callId: string;
@@ -30,12 +31,13 @@ const VAULT_TOOLS = new Set([
   "list_notes", "summarize_note", "get_note_images", "current_note",
   "find_images", "read_note_section", "note_metadata", "note_links",
   "list_folders", "create_folder", "move_note", "trash_note",
+  "read_pdf", "find_pdfs",
 ]);
 
 const NOTE_SCOPE_TOOLS = new Set([
   "read_note", "write_note", "edit_note", "append_note", "summarize_note",
   "get_note_images", "current_note", "read_note_section", "note_metadata",
-  "note_links", "trash_note",
+  "note_links", "trash_note", "read_pdf",
 ]);
 
 /**
@@ -48,8 +50,19 @@ export class ToolRegistry {
   private grantedNotes = new Set<string>();
   private grantedFolders = new Set<string>();
   private vaultGranted = false;
+  /** The PDFs of this chat: the ones attached to it stay readable page by page, the ones in the vault are opened on request. */
+  readonly pdf = new PdfLibrary(async () => {
+    const { loadPdfJs } = await import("obsidian");
+    return (await loadPdfJs()) as PdfJsLike;
+  });
+  private pdfCapabilities: Pick<ReadPdfEnv, "vision" | "describe" | "maxChars"> = { vision: false };
 
   constructor(private app: App) {}
+
+  /** What the model that is running can be given from a PDF: pictures, a description made by another model, how much text per call. */
+  setPdfCapabilities(capabilities: Pick<ReadPdfEnv, "vision" | "describe" | "maxChars">): void {
+    this.pdfCapabilities = capabilities;
+  }
 
   setAccessScope(scope: VaultAccessScope): void {
     const notePath = scope.notePath ? safeVaultPath(scope.notePath, true) : undefined;
@@ -270,6 +283,36 @@ export class ToolRegistry {
         },
       },
       {
+        name: "read_pdf",
+        description:
+          "Read a PDF: one the user attached to this chat (give its name as \"attachment\", or nothing if there is only one) or one in the vault (give its \"path\"). With only that, it returns the page count and the first words of each page (a short PDF comes back whole). Give \"pages\" (e.g. \"1-5\" or \"3,7,10-12\") to read those pages as text, \"query\" to find which pages mention something, or \"view\": true with \"pages\" to get pages as pictures (figures, charts, tables, scanned pages). A long PDF has to be read in pieces: a call returns about 20k characters.",
+        parameters: {
+          type: "object",
+          properties: {
+            path: { type: "string", description: "Vault path of a PDF, e.g. 'Papers/report.pdf'" },
+            attachment: { type: "string", description: "Name of a PDF attached to this chat" },
+            pages: { type: "string", description: "Pages to read: '1-5', '3,7', '10-' (to the end) or 'all'" },
+            query: { type: "string", description: "Text to look for; returns the pages that contain it, with a snippet" },
+            view: { type: "boolean", description: "Return the pages as pictures instead of text (needs pages)" },
+          },
+          required: [],
+        },
+      },
+      {
+        name: "find_pdfs",
+        description:
+          "Find PDF files in the vault by folder/name. Returns paths and sizes; read one with read_pdf.",
+        parameters: {
+          type: "object",
+          properties: {
+            folder: { type: "string", description: "Folder path, or empty/vault for all vault PDFs" },
+            query: { type: "string", description: "Optional filename/path substring filter" },
+            limit: { type: "number", description: "Max results (default 30)" },
+          },
+          required: [],
+        },
+      },
+      {
         name: "read_note_section",
         description:
           "Read one heading section from a markdown note. More efficient than reading the whole note.",
@@ -405,7 +448,7 @@ export class ToolRegistry {
   private describeAccessRequest(name: string, args: any, reason: string): VaultAccessRequest {
     const base = { toolName: name, currentMode: this.accessScope.mode, reason } as const;
     if (name === "search_notes") return { ...base, requestedMode: "vault" };
-    if (["list_notes", "list_folders", "find_images"].includes(name)) {
+    if (["list_notes", "list_folders", "find_images", "find_pdfs"].includes(name)) {
       const folder = String(args.folder ?? "").trim();
       return !folder || folder === "vault"
         ? { ...base, requestedMode: "vault" }
@@ -446,9 +489,11 @@ export class ToolRegistry {
   private enforceAccess(name: string, args: any): void {
     if (!VAULT_TOOLS.has(name) || this.accessScope.mode === "vault" || this.vaultGranted) return;
 
+    // A PDF attached to the chat is not in the vault: only one named by a path is checked against the scope.
+    if (name === "read_pdf" && !String(args.path ?? "").trim()) return;
     const pathTools = new Set([
       "read_note", "write_note", "edit_note", "append_note", "summarize_note",
-      "get_note_images", "read_note_section", "note_metadata", "note_links", "trash_note",
+      "get_note_images", "read_note_section", "note_metadata", "note_links", "trash_note", "read_pdf",
     ]);
     if (pathTools.has(name)) {
       this.assertPathAllowed(args.path, "path");
@@ -470,7 +515,7 @@ export class ToolRegistry {
     if (name === "search_notes") {
       throw new Error(`Access denied: "${name}" needs whole-vault access.`);
     }
-    if (["list_notes", "list_folders", "find_images"].includes(name)) {
+    if (["list_notes", "list_folders", "find_images", "find_pdfs"].includes(name)) {
       const requested = String(args.folder ?? "").trim();
       if (!requested || requested === "vault") {
         throw new Error(`Access denied: "${name}" needs whole-vault access.`);
@@ -530,6 +575,10 @@ export class ToolRegistry {
         return this.fetchUrl(args.url);
       case "find_images":
         return this.findImages(args.folder, args.query, args.limit ?? 30);
+      case "read_pdf":
+        return this.readPdf(args);
+      case "find_pdfs":
+        return this.findPdfs(args.folder, args.query, args.limit ?? 30);
       case "read_note_section":
         return this.readNoteSection(args.path, args.heading);
       case "note_metadata":
@@ -669,6 +718,13 @@ export class ToolRegistry {
       : this.app.workspace.getActiveFile();
     if (!active) return "No note available in the selected context.";
     if (!this.isPathAllowed(active.path)) throw new Error("Access denied: active note is outside the selected context.");
+    const extension = String(active.extension ?? "").toLowerCase();
+    if (extension === "pdf") {
+      return `The open file is a PDF: ${active.path}\n\nRead it with read_pdf (path "${active.path}"): with no other argument it returns the page count and the first words of each page, with "pages" it reads them, with "query" it finds where something is said.`;
+    }
+    if (extension && !["md", "txt", "markdown", "canvas", "json", "csv"].includes(extension)) {
+      return `The open file is ${active.path}, which is not a note (${extension}); it cannot be read as text.`;
+    }
     const content = await this.app.vault.cachedRead(active);
     return `Current note path: ${active.path}\n\n${content}`;
   }
@@ -899,6 +955,41 @@ export class ToolRegistry {
     });
     if (!id) return `Plugin not found: ${query}`;
     return JSON.stringify({ id, enabled: enabled.has(id), ...manifests[id] }, null, 2);
+  }
+
+  private async readPdf(args: ReadPdfArgs): Promise<string> {
+    return readPdfTool(args, {
+      library: this.pdf,
+      ...this.pdfCapabilities,
+      readVault: async (path) => {
+        const file = this.app.vault.getFileByPath(safeVaultPath(path));
+        if (!file || file.extension.toLowerCase() !== "pdf") return null;
+        const buffer = await this.app.vault.readBinary(file);
+        const stat = (file as any).stat;
+        return { bytes: new Uint8Array(buffer), key: `${file.path}:${stat?.mtime ?? 0}:${stat?.size ?? buffer.byteLength}` };
+      },
+    });
+  }
+
+  private findPdfs(folder: string, query: string, limit: number): string {
+    const root = this.app.vault.getRoot();
+    let base: TFolder = root;
+    if (folder && folder !== "vault") {
+      const f = this.app.vault.getFolderByPath(safeVaultPath(folder));
+      if (!f) return `Folder not found: ${folder}`;
+      base = f;
+    }
+    const q = String(query ?? "").toLowerCase().trim();
+    const out: string[] = [];
+    VaultWalker(base, (file) => {
+      if (out.length >= limit) return;
+      if (!this.isPathAllowed(file.path)) return;
+      if (!/\.pdf$/i.test(file.path)) return;
+      if (q && !file.path.toLowerCase().includes(q)) return;
+      const stat = (file as any).stat;
+      out.push(`- ${file.path}${stat?.size ? ` (${Math.round(stat.size / 1024)} KB)` : ""}`);
+    });
+    return out.length ? out.join("\n") : "No matching PDFs found.";
   }
 
   private findImages(folder: string, query: string, limit: number): string {

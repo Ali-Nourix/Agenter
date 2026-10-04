@@ -80,6 +80,7 @@ const HINTS: Record<string, string> = {
   current_note: "Ask for one part with read_note_section, or look for specific text with search_notes",
   summarize_note: "Ask for one part with read_note_section",
   fetch_url: "Fetch a narrower page, or search for the specific part you need",
+  read_pdf: "Ask for fewer pages at a time, or find the part you need with a query",
   web_search: "Narrow the query",
 };
 

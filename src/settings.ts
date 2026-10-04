@@ -80,6 +80,8 @@ export interface AgentSettings {
   retryTransientErrors: boolean;
   /** Stop a model that calls the same tool with the same arguments over and over. */
   loopGuard: boolean;
+  /** Tell a model that stopped in the middle of the job (an announcement, "part 1 of 3", "shall I go on?") to go on. */
+  autoContinue: boolean;
   /** Ask Ollama for the model's whole context window instead of at most 32k (it reserves memory for all of it). */
   ollamaFullContext: boolean;
   /** Describe images and scanned pages with a model that can see, for one that cannot. "" picks one automatically. */
@@ -227,6 +229,7 @@ export const DEFAULT_SETTINGS: AgentSettings = {
   textToolCalls: true,
   retryTransientErrors: true,
   loopGuard: true,
+  autoContinue: true,
   ollamaFullContext: false,
   visionHelperProviderId: "",
   modelLimits: {},
@@ -758,8 +761,18 @@ export class AgentSettingTab extends PluginSettingTab {
       );
 
     new Setting(chatPane)
+      .setName("Keep going until the work is done")
+      .setDesc("A model that stops in the middle of the job — after announcing the next step, writing \"part 1 of 3\", asking whether to go on, or when the connection drops mid-answer — is told to go on, instead of waiting for you to type \"continue\".")
+      .addToggle((tg) =>
+        tg.setValue(this.plugin.settings.autoContinue !== false).onChange(async (v) => {
+          this.plugin.settings.autoContinue = v;
+          await this.plugin.saveSettings();
+        })
+      );
+
+    new Setting(chatPane)
       .setName("Stop repeated tool calls")
-      .setDesc("A model that makes the same call with the same arguments again and again is told so, then stopped.")
+      .setDesc("A model that makes the same call with the same arguments again and again is told so, then asked to answer with what it already has.")
       .addToggle((tg) =>
         tg.setValue(this.plugin.settings.loopGuard).onChange(async (v) => {
           this.plugin.settings.loopGuard = v;

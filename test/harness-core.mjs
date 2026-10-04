@@ -31,6 +31,37 @@ eq(h.formatTokens(2_000_000), "2M", "format: two million");
   ok(c.ratio("m") <= 3, "the ratio is bounded");
 }
 
+// ── a model that stops in the middle of the job ──────────────────────────
+{
+  const why = (text, opts) => h.assessAnswer(text, opts)?.reason ?? null;
+  // Announced, not done.
+  eq(why("Sure. First I will write the middle sections, then the rest."), "announced", "an announced next step");
+  eq(why("I'll prepare the sections one by one for you. First, the middle sections:"), "colon", "a sentence that ends where its content should begin");
+  eq(why("من برای اینکه متن کامل را بدهم، بخش‌ها را تکتک آماده می‌کنم. ابتدا بخش‌های میانی را ارائه می‌دهم."), "announced", "the same, in Persian");
+  eq(why("حالا بخش بعدی را برایتان می‌نویسم:"), "colon", "a Persian announcement of the next part");
+  // Asked for permission to go on.
+  eq(why("Here is part one.\n\nShall I continue with the next section?"), "asks-to-continue", "a question whether to go on");
+  eq(why("بخش اول تمام شد. آیا ادامه بدهم؟"), "asks-to-continue", "…in Persian");
+  eq(why("Reply \"continue\" and I will send the rest."), "asks-to-continue", "a request to say continue");
+  eq(why("Here is the first half of the text… (1/3)"), "part-marker", "a part marker");
+  // Cut off.
+  eq(why("```js\nfunction a() {\n  return 1;"), "open-fence", "a block of code that was never closed");
+  eq(why("The report finds that revenue grew because of the", {}), "cut-off", "a sentence that ends on a connecting word");
+  eq(why("The report finds that revenue grew in the second half", { hitOutputLimit: true }), "cut-off", "whatever the end, when the whole output limit was used");
+  eq(why("و نتیجه گرفتیم که این روش با"), "cut-off", "…in Persian");
+  // Finished, and left alone.
+  eq(why("Revenue grew 12% quarter over quarter."), null, "a plain answer");
+  eq(why("I will write less."), null, "a remark is not an announcement");
+  eq(why("Done. Let me know if you need anything else."), null, "a closing line is not an announcement");
+  eq(why("Which of the two notes do you mean?"), null, "a question the model needs answered is left alone");
+  eq(why("همه چیز انجام شد. اگر نیاز به تغییر داشتید بگویید."), null, "a Persian closing line");
+  eq(why("```js\nconst a = 1;\n```\nThat is the whole function."), null, "a closed block of code");
+  eq(why("I'll read the file.", { midWork: true }), "announced", "in the middle of work, a bare announcement is the model stopping");
+  eq(why("I'll read the file."), null, "…and outside it, it is not");
+  ok(h.addedLittle("Done.") && !h.addedLittle("x".repeat(200)), "a continuation that adds almost nothing is the end of it");
+  ok(/Do not repeat/.test(h.continuationPrompt("cut-off")) && /next part/.test(h.continuationPrompt("part-marker")), "each way of stopping gets its own words");
+}
+
 // ── model profiles ────────────────────────────────────────────────────────
 const base = { providerId: "p", providerType: "openai-compatible", baseUrl: "https://x/v1" };
 {

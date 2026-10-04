@@ -1901,7 +1901,19 @@ The current chat will not restart.`;
 📎 ${parts.map((part) => part.name ?? part.type).join(", ")}` : "";
     this.appendMessage("user", `${effectiveText}${attachmentLabel}`);
     this.messages.push({ role: "user", content: effectiveText, parts });
+    await this.startRun({ text: effectiveText, parts });
+  }
 
+  /** Picks the last run up again after an error that was only the connection: no new message, the work goes on. */
+  private async resume() {
+    if (this.busy || !this.messages.length) return;
+    try { await this.plugin.ensureCloudflareAccessToken(); } catch (error: any) { new Notice(error?.message ?? String(error)); return; }
+    this.autoFollow = true;
+    await this.startRun({ text: "", parts: [], resume: true });
+  }
+
+  private async startRun(opts: { text: string; parts: MessagePart[]; resume?: boolean }) {
+    const { text: effectiveText, parts, resume = false } = opts;
     this.busy = true;
     this.aborted = false;
     this.sendBtn.disabled = true;
@@ -1916,7 +1928,7 @@ The current chat will not restart.`;
     const prompt = contextNote ? `${contextNote}\n\n${effectiveText}` : effectiveText;
 
     this.orchestrator.setAccessScope(accessScope);
-    this.orchestrator.setMessages(this.messages.slice(0, -1));
+    this.orchestrator.setMessages(resume ? this.messages : this.messages.slice(0, -1));
     this.orchestrator.shouldAbort = () => this.aborted;
     this.streamBuf = "";
     this.streamEl = null;
@@ -2031,7 +2043,7 @@ The current chat will not restart.`;
         this.advanceActivity(`approval-${call.name}`, `Waiting for ${TOOL_LABELS[call.name]?.verb ?? call.name} approval`, "Review the action card below");
         return this.requestApproval(call);
       },
-      onError: (err) => {
+      onError: (err, info) => {
         finishReasoning();
         this.collapseToolLine(activeToolLine);
         activeToolLine = null;
@@ -2039,7 +2051,8 @@ The current chat will not restart.`;
         this.hadError = true;
         this.advanceActivity("error", "The run encountered an error", err);
         this.setStatus("error", "Request failed");
-        this.appendSystem(`**Error:** ${err}`);
+        const row = this.appendSystem(`**Error:** ${err}`);
+        if (info?.resumable) this.addResumeButton(row);
       },
       onDone: () => {
         finishReasoning();
@@ -2055,10 +2068,26 @@ The current chat will not restart.`;
       },
     };
 
-    await this.orchestrator.run(prompt, cb, parts);
+    if (resume) await this.orchestrator.resume(cb);
+    else await this.orchestrator.run(prompt, cb, parts);
     // What the model now remembers (including a stopped run's progress, and any compaction).
     if (this.orchestrator.messages.length) this.messages = this.orchestrator.messages;
     this.refreshContextMeter();
+  }
+
+  /** After an error that was only the connection or the provider's load: one click picks the work up where it stopped. */
+  private addResumeButton(after: HTMLElement) {
+    const holder = document.createElement("div");
+    holder.addClass("agenter-resume-row");
+    const btn = holder.createEl("button", { text: "Continue where it stopped", attr: { type: "button" } });
+    btn.addClass("agenter-resume");
+    btn.addEventListener("click", () => {
+      btn.disabled = true;
+      holder.remove();
+      void this.resume();
+    });
+    after.after(holder);
+    this.scrollToBottom();
   }
 
   private syncMessages() {
@@ -2101,7 +2130,8 @@ The current chat will not restart.`;
     if (access.mode === "none") return "[Initial context access: none. If the user asks for access or vault content is needed, call request_access. Never claim that access cannot be requested; continue this same run after approval.]";
     if (access.mode === "note") {
       if (!access.notePath) return "[Context access: none. No active note is available.]";
-      return `[Initial context access: ONLY note "${access.notePath}". If the user asks for access, or the task needs another note, folder, or the whole vault, call request_access with the smallest sufficient scope. Never say you cannot request access. After approval, continue this same run.]`;
+      const pdf = /\.pdf$/i.test(access.notePath) ? ` This file is a PDF: read it with read_pdf (path "${access.notePath}").` : "";
+      return `[Initial context access: ONLY note "${access.notePath}".${pdf} If the user asks for access, or the task needs another note, folder, or the whole vault, call request_access with the smallest sufficient scope. Never say you cannot request access. After approval, continue this same run.]`;
     }
     if (access.mode === "folder") {
       return `[Initial context access: ONLY folder "${access.folderPath ?? ""}" and its children. If more access is needed, call request_access with the smallest sufficient scope and continue this same run after approval.]`;

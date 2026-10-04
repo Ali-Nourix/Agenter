@@ -23,10 +23,11 @@ import { AbortedError, ClassifiedError, classifyError, explainError, retryDelayM
 import { parseToolArguments } from "./harness/json-repair";
 import { INTERRUPTED_RESULT, describeReport, reportIsClean, sanitizeConversation } from "./harness/sanitize";
 import { ToolCallTextGuard, extractTextToolCalls, matchToolName } from "./harness/text-tool-calls";
-import { prepareToolOutput } from "./harness/tool-output";
+import { prepareToolOutput, toolOutputTokenBudget } from "./harness/tool-output";
 import { promptToolsAddendum, toPromptMessages } from "./harness/prompt-tools";
 import type { TokenUsage } from "./harness/tokens";
-import { PreparedTurn, prepareUserTurn } from "./harness/attachments";
+import { DESCRIBE_SYSTEM, PreparedTurn, base64ToBytes, classifyAttachment, mimeFor, prepareUserTurn } from "./harness/attachments";
+import { addedLittle, assessAnswer, continuationPrompt } from "./harness/continuation";
 
 export interface HarnessNotice {
   kind: "retry" | "compact" | "repair" | "info" | "warning";
@@ -38,7 +39,7 @@ export interface ChatCallbacks {
   onReasoningToken?: (token: string) => void;
   onToolUse: (name: string, args: string) => void;
   onToolResult: (result: string) => void;
-  onError: (err: string) => void;
+  onError: (err: string, info?: { resumable: boolean }) => void;
   onDone: () => void;
   /**
    * Called before a mutating tool runs when it requires approval.
@@ -65,9 +66,18 @@ const ACCESS_PROTOCOL = [
   "- A denied request is not a failed session; continue within the available context.",
 ].join("\n");
 
-const MAX_CONTINUATIONS = 8;
-const MAX_ATTEMPTS_TRANSIENT = 5;
+/** Pieces an answer may go on in when it keeps reaching the output limit. */
+const MAX_CONTINUATIONS = 12;
+/** Times in a row a model that stopped after announcing or asking is told to go on. */
+const MAX_KEEP_GOING = 4;
+/** Times a model that spent its whole output thinking is told to answer more briefly. */
+const MAX_THINK_NUDGES = 2;
+/** An answer that broke off with at least this much written is continued rather than started again. */
+const PARTIAL_KEPT = 60;
+const MAX_ATTEMPTS_TRANSIENT = 8;
 const MAX_NEGOTIATIONS = 6;
+/** Failures that are about the connection or the provider's load, not about the request: the work can be picked up again. */
+const RESUMABLE = new Set(["rate_limit", "overloaded", "server", "network", "timeout", "refused"]);
 const MAX_NUDGES = 2;
 const REPEAT_WARN = 3;
 const REPEAT_STOP = 6;
@@ -85,6 +95,8 @@ interface RunContext {
   manualMax?: number;
   /** An output limit worked out from an error that said how much room the input left, for this request only. */
   outputCeiling?: number;
+  /** The model kept repeating one call: it gets one more request, and what it writes then is the answer, calls or not. */
+  finalOnly?: boolean;
   signal: AbortSignal;
   cb: ChatCallbacks;
 }
@@ -97,6 +109,23 @@ interface TurnResult {
   usage?: TokenUsage;
   shown: boolean;
   guard: ToolCallTextGuard;
+  /** The output limit this request asked for. */
+  maxOutput: number;
+  /** The connection ended in the middle of the answer; what arrived is kept. */
+  interrupted?: boolean;
+}
+
+interface LoopState {
+  continuations: number;
+  nudges: number;
+  malformed: number;
+  lastSig: string;
+  repeat: number;
+  sawToolResult: boolean;
+  keepGoing: number;
+  thinkNudges: number;
+  /** The last request was a "go on" after the model stopped by itself. */
+  afterKeepGoing: boolean;
 }
 
 function sleep(ms: number, signal: AbortSignal): Promise<void> {
@@ -235,6 +264,49 @@ export class AgentOrchestrator {
   // ── a run ───────────────────────────────────────────────────────────────
 
   async run(userInput: string, cb: ChatCallbacks, parts: MessagePart[] = []): Promise<void> {
+    await this.execute(cb, async (ctx) => {
+      // A PDF stays readable page by page for the rest of the chat, whatever was done with it this turn.
+      for (const part of parts) {
+        if (!part.data) continue;
+        const name = part.name ?? "attachment";
+        if (classifyAttachment(name, mimeFor(name, part.mimeType ?? "")) === "pdf") this.toolRegistry.pdf.addAttachment(name, base64ToBytes(part.data));
+      }
+      // Attachments become what this model can use: parts it can take as they are, text for the rest.
+      let prepared: PreparedTurn = { content: userInput, parts, notes: [] };
+      if (parts.length) {
+        prepared = await prepareUserTurn({
+          text: userInput,
+          parts,
+          profile: ctx.profile,
+          app: this.app,
+          settings: this.settings,
+          log: this.services.log,
+          notice: (text) => cb.onNotice?.({ kind: "info", text }),
+          describe: (messages, signal) => this.describeWithHelper(ctx.provider, messages, signal),
+          signal: ctx.signal,
+          contextBudget: Math.floor(ctx.profile.contextWindow * 0.4),
+        });
+      }
+      ctx.conversation.push({ role: "user", content: prepared.content, parts: prepared.parts });
+    });
+  }
+
+  /** Picks the work up again from where it was left: after an error, or a stop. */
+  async resume(cb: ChatCallbacks): Promise<void> {
+    await this.execute(cb, async (ctx) => {
+      const last = ctx.conversation[ctx.conversation.length - 1];
+      const waiting = last.role === "user" && typeof last.metadata?.kind !== "string";
+      if (!waiting) {
+        ctx.conversation.push({
+          role: "user",
+          content: "Carry on from where you were interrupted and finish what the user asked for. Do not start over and do not repeat what you already did.",
+          metadata: { kind: "continue", joiner: "\n\n" },
+        });
+      }
+    });
+  }
+
+  private async execute(cb: ChatCallbacks, prepare: (ctx: RunContext) => Promise<void>): Promise<void> {
     const provider = getActiveProvider(this.settings);
     if (!provider || !provider.apiKey) {
       cb.onError(
@@ -268,30 +340,20 @@ export class AgentOrchestrator {
       cb,
     };
 
+    this.toolRegistry.setPdfCapabilities({
+      vision: profile.vision,
+      maxChars: Math.max(3_000, Math.min(24_000, toolOutputTokenBudget(profile.contextWindow) * 3 - 800)),
+      describe: (images, name) => this.describePdfPages(provider, images, name, controller.signal),
+    });
+
     try {
-      // Attachments become what this model can use: parts it can take as they are, text for the rest.
-      let prepared: PreparedTurn = { content: userInput, parts, notes: [] };
-      if (parts.length) {
-        prepared = await prepareUserTurn({
-          text: userInput,
-          parts,
-          profile,
-          app: this.app,
-          settings: this.settings,
-          log: this.services.log,
-          notice: (text) => cb.onNotice?.({ kind: "info", text }),
-          describe: (messages, signal) => this.describeWithHelper(provider, messages, signal),
-          signal: controller.signal,
-          contextBudget: Math.floor(profile.contextWindow * 0.4),
-        });
-      }
-      ctx.conversation.push({ role: "user", content: prepared.content, parts: prepared.parts });
-      await this.loop(ctx);
+      await prepare(ctx);
+      if (ctx.conversation.length > 1) await this.loop(ctx);
     } catch (e: any) {
       if (!(e instanceof AbortedError) && e?.name !== "AbortError") {
         const c = classifyError(e);
         this.services.log.add("error", `${c.kind}: ${c.message.slice(0, 300)}`);
-        cb.onError(explainError(c, provider.name));
+        cb.onError(explainError(c, provider.name), { resumable: RESUMABLE.has(c.kind) && ctx.conversation.length > 1 });
       }
       this.commit(ctx);
     } finally {
@@ -318,7 +380,8 @@ export class AgentOrchestrator {
       }
       const prev = out[out.length - 1];
       if (m.role === "assistant" && !m.tool_calls?.length && prev && prev.role === "assistant" && !prev.tool_calls?.length && messages[i - 1]?.metadata?.kind === "continue") {
-        out[out.length - 1] = { ...prev, content: `${prev.content}${m.content}` };
+        const joiner = typeof messages[i - 1].metadata?.joiner === "string" ? (messages[i - 1].metadata!.joiner as string) : "";
+        out[out.length - 1] = { ...prev, content: `${prev.content}${joiner}${m.content}` };
         continue;
       }
       out.push({ ...m });
@@ -354,7 +417,8 @@ export class AgentOrchestrator {
 
   private async loop(ctx: RunContext): Promise<void> {
     const { cb } = ctx;
-    const state = { continuations: 0, nudges: 0, malformed: 0, lastSig: "", repeat: 0, sawToolResult: false };
+    const state: LoopState = { continuations: 0, nudges: 0, malformed: 0, lastSig: "", repeat: 0, sawToolResult: false, keepGoing: 0, thinkNudges: 0, afterKeepGoing: false };
+    const keepGoingOn = this.settings.autoContinue !== false;
 
     // Continue until the model produces a final answer or the user stops the run.
     // Tool-heavy workflows are not cut off by an arbitrary round count; a model
@@ -394,11 +458,35 @@ export class AgentOrchestrator {
 
       if (turn.usage) this.recordUsage(ctx, turn.usage);
 
+      // The model was told to answer with what it has: whatever it wrote now is the answer.
+      if (ctx.finalOnly) {
+        let answer = text;
+        if (!answer.trim()) {
+          answer = "(The model kept making the same tool call and wrote no answer. Rephrase the request, or pick another model.)";
+          cb.onAssistantToken(answer);
+        }
+        ctx.conversation.push({ role: "assistant", content: answer, reasoning: turn.reasoning || undefined });
+        this.commit(ctx);
+        this.emitContext(ctx);
+        return;
+      }
+
       // ── no tools: an answer, or something that is not one ────────────────
       if (calls.length === 0) {
-        if (finish.reason === "length") {
+        const afterKeepGoing = state.afterKeepGoing;
+        state.afterKeepGoing = false;
+
+        // Cut off by the limit, whether or not the provider said so: a stop that spent (nearly) everything it was allowed is one.
+        const usedAll = !!turn.usage && turn.maxOutput > 0 && turn.usage.outputTokens >= turn.maxOutput * 0.97 && !!text.trim();
+        if (finish.reason === "length" || (usedAll && (finish.reason === "stop" || finish.reason === "other"))) {
           const spentThinking = !text.trim();
           if (spentThinking) {
+            if (keepGoingOn && state.thinkNudges < MAX_THINK_NUDGES) {
+              state.thinkNudges++;
+              this.notice(ctx, "info", "The model spent its whole output limit thinking; asking it to think less and answer.", "output-cut");
+              ctx.conversation.push({ role: "user", content: "You used the whole output limit on thinking and wrote no answer. Think much more briefly this time and write the answer now.", metadata: { kind: "nudge" } });
+              continue;
+            }
             this.notice(ctx, "warning", "The model used its whole output limit before writing an answer (thinking can use all of it). Ask for something shorter, or lower its reasoning effort in the model settings.", "output-cut");
             ctx.conversation.push({ role: "assistant", content: text, reasoning: turn.reasoning || undefined });
             this.commit(ctx);
@@ -407,10 +495,13 @@ export class AgentOrchestrator {
           ctx.conversation.push({ role: "assistant", content: text, reasoning: turn.reasoning || undefined });
           if (state.continuations < MAX_CONTINUATIONS) {
             state.continuations++;
-            this.notice(ctx, "info", "The answer reached the model's output limit; asking it to go on…", "continued");
-            ctx.conversation.push({ role: "user", content: "Continue exactly where you stopped. Do not repeat anything and do not start over.", metadata: { kind: "continue" } });
+            if (!turn.interrupted) {
+              this.notice(ctx, "info", finish.reason === "length" ? "The answer reached the model's output limit; asking it to go on…" : "The answer used the whole output limit; asking the model to go on…", "continued");
+            }
+            ctx.conversation.push({ role: "user", content: continuationPrompt("cut-off"), metadata: { kind: "continue" } });
             continue;
           }
+          this.notice(ctx, "warning", `The answer was still going after ${MAX_CONTINUATIONS} pieces; it stops here. Ask for the rest.`, "continued");
           this.commit(ctx);
           return;
         }
@@ -427,10 +518,14 @@ export class AgentOrchestrator {
           continue;
         }
         if (!text.trim()) {
-          if (state.sawToolResult && state.nudges < MAX_NUDGES) {
+          if (state.nudges < MAX_NUDGES) {
             state.nudges++;
-            this.services.log.add("empty", "The model answered with nothing after tool results; asking it to continue.");
-            ctx.conversation.push({ role: "user", content: "Continue: use the tool results above to answer the user's request now.", metadata: { kind: "nudge" } });
+            this.services.log.add("empty", "The model answered with nothing; asking it to continue.");
+            ctx.conversation.push({
+              role: "user",
+              content: state.sawToolResult ? "Continue: use the tool results above to answer the user's request now." : "Your last reply was empty. Answer the user's request now.",
+              metadata: { kind: "nudge" },
+            });
             continue;
           }
           this.services.log.add("empty", "The model returned an empty answer.");
@@ -439,6 +534,20 @@ export class AgentOrchestrator {
           ctx.conversation.push({ role: "assistant", content: filler });
           this.commit(ctx);
           return;
+        }
+
+        // The model stopped by itself in the middle of the job: it announced the next step, wrote one part of several, or asked whether to go on.
+        if (keepGoingOn && state.keepGoing < MAX_KEEP_GOING && !(afterKeepGoing && addedLittle(text))) {
+          const unfinished = assessAnswer(text, { midWork: state.sawToolResult });
+          if (unfinished) {
+            state.keepGoing++;
+            state.afterKeepGoing = true;
+            this.notice(ctx, "info", `Going on by itself: ${unfinished.label}.`, "keep-going");
+            ctx.conversation.push({ role: "assistant", content: text, reasoning: turn.reasoning || undefined });
+            ctx.conversation.push({ role: "user", content: continuationPrompt(unfinished.reason), metadata: { kind: "continue", joiner: unfinished.joiner } });
+            if (unfinished.joiner) cb.onAssistantToken(unfinished.joiner);
+            continue;
+          }
         }
         ctx.conversation.push({ role: "assistant", content: text, reasoning: turn.reasoning || undefined });
         this.commit(ctx);
@@ -449,6 +558,8 @@ export class AgentOrchestrator {
       // ── tools ────────────────────────────────────────────────────────────
       state.continuations = 0;
       state.nudges = 0;
+      state.keepGoing = 0;
+      state.afterKeepGoing = false;
       const outcome = await this.runCalls(ctx, calls, text, turn, finish, state);
       if (outcome === "stop") return;
     }
@@ -498,6 +609,24 @@ export class AgentOrchestrator {
       modelOptions: this.settings.modelOptions?.[`${provider.id}:${provider.model}`] ?? {},
       profile,
     });
+  }
+
+  /** Pages of a PDF read by a model that can see, for one that cannot: a few at a time, each transcribed under its number. */
+  private async describePdfPages(main: ProviderConfig, images: Array<{ data: string; mimeType: string; page: number }>, name: string, signal: AbortSignal): Promise<string | null> {
+    const described: string[] = [];
+    for (let i = 0; i < images.length; i += 4) {
+      const batch = images.slice(i, i + 4);
+      const out = await this.describeWithHelper(
+        main,
+        [
+          { role: "system", content: DESCRIBE_SYSTEM },
+          { role: "user", content: `These are pages ${batch.map((b) => b.page).join(", ")} of the document "${name}". Transcribe each page in order, starting each with [Page N]. Keep tables as tables.`, parts: batch.map((b) => ({ type: "image" as const, data: b.data, mimeType: b.mimeType, name: `${name} page ${b.page}` })) },
+        ],
+        signal
+      );
+      if (out) described.push(out);
+    }
+    return described.length ? described.join("\n\n") : null;
   }
 
   /** An image or scanned page described by a model that can see, for one that cannot. */
@@ -551,6 +680,14 @@ export class AgentOrchestrator {
       if (c.transient && this.settings.retryTransientErrors !== false && transient < MAX_ATTEMPTS_TRANSIENT) {
         transient++;
         const wait = retryDelayMs(transient, c.retryAfterMs);
+        // The connection broke in the middle of a long answer: what arrived is kept and the model goes on from there,
+        // instead of writing it all again (which may break in the same place).
+        const partial = turn.result;
+        if (this.settings.autoContinue !== false && partial && !partial.calls.length && partial.text.trim().length >= PARTIAL_KEPT) {
+          this.notice(ctx, "retry", `${explainShort(c)} What it had written is kept; asking it to go on in ${Math.max(1, Math.round(wait / 1000))}s (${transient}/${MAX_ATTEMPTS_TRANSIENT})…`, "retry");
+          await sleep(wait, ctx.signal);
+          return { ...partial, finish: { reason: "length", raw: "interrupted" }, interrupted: true };
+        }
         if (shown) ctx.cb.onStreamReset?.();
         this.notice(ctx, "retry", `${explainShort(c)} Trying again in ${Math.max(1, Math.round(wait / 1000))}s (${transient}/${MAX_ATTEMPTS_TRANSIENT})…`, "retry");
         await sleep(wait, ctx.signal);
@@ -666,7 +803,7 @@ export class AgentOrchestrator {
       },
       this.settings.textToolCalls !== false && ctx.tools.length > 0
     );
-    const result: TurnResult = { text: "", reasoning: "", calls: [], finish: { reason: "stop" }, shown: false, guard };
+    const result: TurnResult = { text: "", reasoning: "", calls: [], finish: { reason: "stop" }, shown: false, guard, maxOutput };
     let failure: unknown = null;
     try {
       await adapter.chat(
@@ -720,7 +857,7 @@ export class AgentOrchestrator {
     text: string,
     turn: TurnResult,
     finish: FinishInfo,
-    state: { continuations: number; nudges: number; malformed: number; lastSig: string; repeat: number; sawToolResult: boolean }
+    state: LoopState
   ): Promise<"continue" | "stop"> {
     const { cb } = ctx;
     const truncated = finish.reason === "length";
@@ -838,10 +975,20 @@ export class AgentOrchestrator {
     }
 
     if (guardOn && state.repeat >= REPEAT_STOP) {
-      this.notice(ctx, "warning", "The model kept making the same tool call, so the run was stopped.", "loop-guard");
-      cb.onError("The model kept making the same tool call. I stopped it. Try rephrasing the request, or pick another model.");
-      this.commit(ctx);
-      return "stop";
+      if (ctx.finalOnly || this.settings.autoContinue === false) {
+        this.notice(ctx, "warning", "The model kept making the same tool call, so the run was stopped.", "loop-guard");
+        cb.onError("The model kept making the same tool call. I stopped it. Try rephrasing the request, or pick another model.");
+        this.commit(ctx);
+        return "stop";
+      }
+      // Not a dead end: it is told to stop calling and to answer with what it has.
+      this.notice(ctx, "warning", "The model kept making the same tool call; asking it to answer with what it already has.", "loop-guard");
+      ctx.finalOnly = true;
+      ctx.conversation.push({
+        role: "user",
+        content: "You keep making the same tool call and getting the same result. Do not call any more tools. Write your answer to the user now from what you already have, and say plainly what you could not find out.",
+        metadata: { kind: "nudge" },
+      });
     }
     this.emitContext(ctx);
     return "continue";

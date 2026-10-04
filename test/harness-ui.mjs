@@ -329,5 +329,27 @@ const send = async (text) => { panel["inputEl"].value = text; await panel["send"
   delete plugin.settings.modelOptions[key];
 }
 
+// ── after a dropped connection, one click carries on ──────────────────────
+{
+  queue.length = 0;
+  plugin.settings.retryTransientErrors = false;
+  const before = $$(".agenter-msg-assistant").length;
+  queue.push(fail(503));
+  await send("write the whole report");
+  const row = $$(".agenter-msg-system").at(-1);
+  ok(row && /Error/.test(row.textContent), "the error is shown");
+  const button = $(".agenter-resume", row.nextElementSibling ?? document);
+  ok(button && /Continue where it stopped/.test(button.textContent), "with a button to carry on");
+  queue.push(say("Here is the whole report."));
+  button.click();
+  await wait(120);
+  ok(!$(".agenter-resume"), "the button goes once it is used");
+  eq($$(".agenter-msg-assistant").length, before + 1, "the answer arrives without a new message from the person");
+  eq($$(".agenter-msg-assistant").at(-1).dataset.raw, "Here is the whole report.", "and it is the report");
+  ok(/write the whole report/.test(seen.at(-1).messages.at(-1).content), "the request that failed is made again as it was");
+  eq($$(".agenter-msg-user").filter((el) => el.dataset.raw.includes("write the whole report")).length, 1, "without the person's message being shown twice");
+  plugin.settings.retryTransientErrors = true;
+}
+
 server.close();
 console.log(`HARNESS_UI_OK (${count()} checks)`);

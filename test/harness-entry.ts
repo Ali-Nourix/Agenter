@@ -10,3 +10,4 @@ export * from "../src/harness/errors";
 export * from "../src/harness/prompt-tools";
 export * from "../src/harness/diagnostics";
 export * from "../src/harness/attachments";
+export * from "../src/harness/continuation";

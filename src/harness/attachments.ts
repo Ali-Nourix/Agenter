@@ -29,6 +29,10 @@ import type { MessagePart } from "../provider-types";
 import type { HarnessLog } from "./diagnostics";
 import type { ModelProfile } from "./model-profile";
 import { truncateMiddle } from "./tool-output";
+import { PdfJsLike, PdfReader, describePages, renderPdfPage } from "./pdf";
+
+export { renderPdfPage };
+export type { PdfDocLike, PdfJsLike, PdfPageLike } from "./pdf";
 
 export type AttachmentKind = "image" | "pdf" | "audio" | "text" | "docx" | "pptx" | "xlsx" | "unsupported";
 
@@ -98,7 +102,7 @@ export function planFor(kind: AttachmentKind, profile: Pick<ModelProfile, "visio
     case "pdf":
       return profile.pdfNative
         ? { plan: "native", label: "The PDF is sent as it is; the provider reads its pages." }
-        : { plan: "text", label: profile.vision ? "The text is read out of the PDF; scanned pages are shown to the model." : helperAvailable ? "The text is read out of the PDF; scanned pages are described by another model." : "The text is read out of the PDF (scanned pages cannot be read)." };
+        : { plan: "text", label: profile.vision ? "The text is read out of the PDF; scanned pages are shown to the model, and it can read the other pages on request." : helperAvailable ? "The text is read out of the PDF; scanned pages are described by another model, and the model can read the other pages on request." : "The text is read out of the PDF (scanned pages cannot be read); the model can read the other pages on request." };
     case "audio":
       return profile.providerType === "gemini"
         ? { plan: "native", label: "The model will listen to this audio." }
@@ -288,60 +292,6 @@ export function extractXlsx(bytes: Uint8Array, maxRows = 400): string {
 
 // ── PDFs ──────────────────────────────────────────────────────────────────
 
-/** The part of pdf.js that is used. Obsidian provides it through `loadPdfJs()`. */
-export interface PdfJsLike {
-  getDocument(src: { data: Uint8Array } | Uint8Array): { promise: Promise<PdfDocLike> };
-}
-export interface PdfDocLike {
-  numPages: number;
-  getPage(n: number): Promise<PdfPageLike>;
-  destroy?: () => void;
-}
-export interface PdfPageLike {
-  getTextContent(): Promise<{ items: Array<{ str?: string; hasEOL?: boolean }> }>;
-  getViewport(o: { scale: number }): { width: number; height: number };
-  render(o: { canvasContext: unknown; viewport: unknown }): { promise: Promise<void> };
-}
-
-export interface PdfText {
-  pages: number;
-  /** Pages that had a text layer. */
-  textPages: number;
-  text: string;
-  truncated: boolean;
-}
-
-/** The text of a PDF, page by page, up to `maxChars`. */
-export async function pdfToText(doc: PdfDocLike, maxChars: number, shouldStop?: () => boolean): Promise<PdfText> {
-  const pages = doc.numPages;
-  const out: string[] = [];
-  let total = 0;
-  let textPages = 0;
-  let truncated = false;
-  for (let n = 1; n <= Math.min(pages, MAX_PDF_PAGES_AS_TEXT); n++) {
-    if (shouldStop?.()) break;
-    const page = await doc.getPage(n);
-    const content = await page.getTextContent();
-    let text = "";
-    for (const item of content.items) {
-      text += item.str ?? "";
-      text += item.hasEOL ? "\n" : " ";
-    }
-    text = text.replace(/[ \t]+\n/g, "\n").replace(/ {2,}/g, " ").replace(/\n{3,}/g, "\n\n").trim();
-    if (text.length >= 40) textPages++;
-    const block = `[Page ${n}]\n${text}`;
-    if (total + block.length > maxChars) {
-      out.push(block.slice(0, Math.max(0, maxChars - total)) + "\n[…]");
-      truncated = true;
-      break;
-    }
-    out.push(block);
-    total += block.length + 2;
-  }
-  if (!truncated && pages > MAX_PDF_PAGES_AS_TEXT) truncated = true;
-  return { pages, textPages, text: out.join("\n\n"), truncated };
-}
-
 /** Rough page count of a PDF from its bytes, for providers that read it natively. */
 export function countPdfPages(bytes: Uint8Array): number {
   const head = Buffer.from(bytes.subarray(0, Math.min(bytes.length, 4_000_000))).toString("latin1");
@@ -351,24 +301,6 @@ export function countPdfPages(bytes: Uint8Array): number {
 }
 
 // ── the environment: what needs the renderer ──────────────────────────────
-
-/** A page of a PDF drawn as a JPEG, base64 without the prefix. Needs a DOM. */
-export async function renderPdfPage(doc: PdfDocLike, n: number, maxSide = 1600): Promise<{ data: string; mimeType: string } | null> {
-  if (typeof document === "undefined") return null;
-  const page = await doc.getPage(n);
-  const base = page.getViewport({ scale: 1 });
-  const scale = Math.min(2, maxSide / Math.max(base.width, base.height));
-  const viewport = page.getViewport({ scale });
-  const canvas = document.createElement("canvas");
-  canvas.width = Math.ceil(viewport.width);
-  canvas.height = Math.ceil(viewport.height);
-  const context = canvas.getContext("2d");
-  if (!context) return null;
-  context.fillStyle = "#fff";
-  context.fillRect(0, 0, canvas.width, canvas.height);
-  await page.render({ canvasContext: context, viewport }).promise;
-  return { data: canvas.toDataURL("image/jpeg", 0.85).split(",")[1] ?? "", mimeType: "image/jpeg" };
-}
 
 /** Shrinks a large picture: providers refuse some sizes, and a huge one is slow and no better understood. */
 export async function downscaleImage(data: string, mime: string, maxSide = 2000): Promise<{ data: string; mimeType: string } | null> {
@@ -427,7 +359,7 @@ export interface PrepareArgs {
   env?: AttachmentEnv;
 }
 
-const DESCRIBE_SYSTEM =
+export const DESCRIBE_SYSTEM =
   "You describe images for someone who cannot see them. Be exact and complete. First transcribe all visible text verbatim, in its own language and in reading order. Then describe what is shown: objects, people, layout, colours; for charts and tables give the labels and the numbers; for screenshots say what application and what state. No preamble and no opinions.";
 const TRANSCRIBE_SYSTEM =
   "You transcribe audio faithfully, in the language spoken, with speaker changes marked where you can tell. Add a one-line description of non-speech sounds only if they matter. No preamble.";
@@ -513,23 +445,29 @@ export async function prepareUserTurn(args: PrepareArgs): Promise<PreparedTurn> 
         const pages = countPdfPages(bytes);
         if (profile.pdfNative && bytes.length <= 30 * 1024 * 1024 && pages <= 100) {
           outParts.push({ type: "pdf", data: part.data, mimeType: "application/pdf", name, metadata: { pages } });
-          blocks.push(`[Attached PDF: ${name} (${pages} pages), given to you whole.]`);
+          blocks.push(`[Attached PDF: ${name} (${pages} pages), given to you whole. The read_pdf tool can also read or search it by page.]`);
           note(`sent as a PDF (${pages} pages)`);
         } else {
           notice(`Reading ${name}…`);
           const pdfjs = await loadPdf();
           const doc = await pdfjs.getDocument({ data: new Uint8Array(bytes) }).promise;
+          const reader = new PdfReader(doc, name, env.renderPage);
           try {
-            const text = await pdfToText(doc, Math.floor(remaining / Math.max(1, pending)), () => signal.aborted);
-            const scanned = text.textPages < Math.max(1, Math.ceil(text.pages / 2));
-            if (text.textPages > 0) {
-              const cut = addText(`${name} (PDF, ${text.pages} pages)`, text.text, "Ask for specific pages or a specific part");
-              note(`read ${text.textPages} of ${text.pages} pages as text${cut || text.truncated ? " (cut to fit)" : ""}`);
+            const total = doc.numPages;
+            const share = Math.max(1_500, Math.floor(remaining / Math.max(1, pending)));
+            const all = Array.from({ length: Math.min(total, MAX_PDF_PAGES_AS_TEXT) }, (_, i) => i + 1);
+            const read = await reader.read(all, share, () => signal.aborted);
+            const examined = read.shown.length + read.empty.length;
+            const scanned = read.shown.length < Math.max(1, Math.ceil(examined / 2));
+            if (read.shown.length > 0) {
+              const last = read.shown[read.shown.length - 1];
+              const rest = last < total ? ` ${last + 1 === total ? `Page ${total} is` : `Pages ${last + 1}-${total} are`} not included here: read them with the read_pdf tool (attachment "${name}", pages "${last + 1}-${Math.min(total, last + 20)}"), or find where something is with its query.` : "";
+              const cut = addText(`${name} (PDF, ${total} pages)`, `${read.text}${rest ? `\n\n[${rest.trim()}]` : ""}`, "Read other pages with read_pdf");
+              note(`read ${read.shown.length} of ${total} pages as text${cut || last < total ? " (the rest can be read with read_pdf)" : ""}`);
             }
             if (scanned) {
               // Pages with no text layer: show them, or have them described.
-              const need: number[] = [];
-              for (let n = 1; n <= Math.min(text.pages, MAX_RENDERED_PAGES); n++) need.push(n);
+              const need = read.empty.slice(0, MAX_RENDERED_PAGES);
               const render = env.renderPage ?? renderPdfPage;
               const images: Array<{ data: string; mimeType: string; n: number }> = [];
               for (const n of need) {
@@ -539,7 +477,7 @@ export async function prepareUserTurn(args: PrepareArgs): Promise<PreparedTurn> 
               }
               if (images.length && profile.vision) {
                 for (const img of images) outParts.push({ type: "image", data: img.data, mimeType: img.mimeType, name: `${name} page ${img.n}` });
-                blocks.push(`[${name} has pages with no text layer (scanned). The first ${images.length} page image(s) are shown to you${text.pages > images.length ? `; the document has ${text.pages} pages` : ""}.]`);
+                blocks.push(`[${name} has pages with no text layer (scanned). Page image(s) ${describePages(images.map((i) => i.n))} are shown to you${total > images.length ? `; the document has ${total} pages, and read_pdf can show more of them` : ""}.]`);
                 note(`scanned: ${images.length} page(s) drawn and shown`);
               } else if (images.length) {
                 notice(`Reading scanned pages of ${name} with a vision model…`);
@@ -549,7 +487,7 @@ export async function prepareUserTurn(args: PrepareArgs): Promise<PreparedTurn> 
                   const out = await args.describe(
                     [
                       { role: "system", content: DESCRIBE_SYSTEM },
-                      { role: "user", content: `These are pages ${batch[0].n}–${batch[batch.length - 1].n} of the document "${name}". Transcribe each page in order, starting each with [Page N].`, parts: batch.map((b) => ({ type: "image" as const, data: b.data, mimeType: b.mimeType, name: `${name} page ${b.n}` })) },
+                      { role: "user", content: `These are pages ${batch.map((b) => b.n).join(", ")} of the document "${name}". Transcribe each page in order, starting each with [Page N].`, parts: batch.map((b) => ({ type: "image" as const, data: b.data, mimeType: b.mimeType, name: `${name} page ${b.n}` })) },
                     ],
                     signal
                   );
@@ -562,13 +500,13 @@ export async function prepareUserTurn(args: PrepareArgs): Promise<PreparedTurn> 
                   blocks.push(`[The PDF "${name}" is scanned (no text layer) and this model cannot see images; no vision model is available to read it. Say so plainly.]`);
                   note("scanned, and nothing could read it");
                 }
-              } else if (text.textPages === 0) {
-                blocks.push(`[The PDF "${name}" (${text.pages} pages) has no text layer and its pages could not be drawn. Say so plainly.]`);
+              } else if (!read.shown.length) {
+                blocks.push(`[The PDF "${name}" (${total} pages) has no text layer and its pages could not be drawn. Say so plainly.]`);
                 note("no text layer");
               }
             }
           } finally {
-            doc.destroy?.();
+            reader.destroy();
           }
         }
       } else if (kind === "audio") {

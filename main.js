@@ -1894,6 +1894,7 @@ var DEFAULT_SETTINGS = {
   textToolCalls: true,
   retryTransientErrors: true,
   loopGuard: true,
+  autoContinue: true,
   ollamaFullContext: false,
   visionHelperProviderId: "",
   modelLimits: {},
@@ -2317,7 +2318,13 @@ var AgentSettingTab = class extends import_obsidian4.PluginSettingTab {
         await this.plugin.saveSettings();
       })
     );
-    new import_obsidian4.Setting(chatPane).setName("Stop repeated tool calls").setDesc("A model that makes the same call with the same arguments again and again is told so, then stopped.").addToggle(
+    new import_obsidian4.Setting(chatPane).setName("Keep going until the work is done").setDesc('A model that stops in the middle of the job \u2014 after announcing the next step, writing "part 1 of 3", asking whether to go on, or when the connection drops mid-answer \u2014 is told to go on, instead of waiting for you to type "continue".').addToggle(
+      (tg) => tg.setValue(this.plugin.settings.autoContinue !== false).onChange(async (v) => {
+        this.plugin.settings.autoContinue = v;
+        await this.plugin.saveSettings();
+      })
+    );
+    new import_obsidian4.Setting(chatPane).setName("Stop repeated tool calls").setDesc("A model that makes the same call with the same arguments again and again is told so, then asked to answer with what it already has.").addToggle(
       (tg) => tg.setValue(this.plugin.settings.loopGuard).onChange(async (v) => {
         this.plugin.settings.loopGuard = v;
         await this.plugin.saveSettings();
@@ -2677,6 +2684,664 @@ var import_obsidian7 = require("obsidian");
 
 // src/tools.ts
 var import_obsidian5 = require("obsidian");
+
+// src/harness/tool-output.ts
+var CHARS_PER_TOKEN = 3;
+function toolOutputTokenBudget(contextWindow) {
+  return Math.max(1500, Math.min(5e4, Math.floor(contextWindow * 0.2)));
+}
+function extractImages(output, vision) {
+  const images = [];
+  let found = 0;
+  const lines = output.split("\n");
+  const kept = [];
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (trimmed.startsWith("{") && trimmed.includes('"dataUri"')) {
+      try {
+        const item = JSON.parse(trimmed);
+        const m = /^data:([^;,]+);base64,(.+)$/s.exec(item.dataUri ?? "");
+        if (m) {
+          found++;
+          const kb = Math.round(m[2].length * 3 / 4 / 1024);
+          const label = item.name ?? "image";
+          if (vision) {
+            images.push({ type: "image", mimeType: item.mime ?? m[1], data: m[2], name: label });
+            kept.push(`[Image: ${label} (${item.mime ?? m[1]}, ${kb} KB), shown to you in the next message]`);
+          } else {
+            kept.push(`[Image: ${label} (${item.mime ?? m[1]}, ${kb} KB), not shown: this model cannot see images]`);
+          }
+          continue;
+        }
+      } catch {
+      }
+    }
+    kept.push(line);
+  }
+  return { text: kept.join("\n"), images, found };
+}
+function stripInlineDataUris(text) {
+  return text.replace(/data:[a-z0-9.+-]+\/[a-z0-9.+-]+;base64,[A-Za-z0-9+/=]{800,}/gi, (m) => `[base64 data omitted: ${Math.round(m.length / 1024)} KB]`);
+}
+function truncateMiddle(text, maxChars, hint) {
+  if (text.length <= maxChars) return { text, truncated: false };
+  const note = `
+
+[\u2026 ${text.length - maxChars} of ${text.length} characters omitted from the middle. ${hint}]
+
+`;
+  const budget = Math.max(200, maxChars - note.length);
+  const head = Math.floor(budget * 0.7);
+  const tail = budget - head;
+  return { text: text.slice(0, head) + note + text.slice(text.length - tail), truncated: true };
+}
+var HINTS = {
+  read_note: "Ask for one part with read_note_section, or look for specific text with search_notes",
+  current_note: "Ask for one part with read_note_section, or look for specific text with search_notes",
+  summarize_note: "Ask for one part with read_note_section",
+  fetch_url: "Fetch a narrower page, or search for the specific part you need",
+  read_pdf: "Ask for fewer pages at a time, or find the part you need with a query",
+  web_search: "Narrow the query"
+};
+function prepareToolOutput(name, output, opts) {
+  const original = String(output ?? "");
+  const { text: withoutImages, images, found } = extractImages(original, opts.vision);
+  const cleaned = stripInlineDataUris(withoutImages);
+  const maxChars = toolOutputTokenBudget(opts.contextWindow) * CHARS_PER_TOKEN;
+  const cut = truncateMiddle(cleaned, maxChars, HINTS[name] ?? "Ask for a smaller part of it");
+  return {
+    text: cut.text,
+    images,
+    truncated: cut.truncated,
+    originalChars: original.length,
+    imagesFound: found
+  };
+}
+
+// src/harness/pdf.ts
+var RTL_LETTER = /[֐-׿؀-؅؈؋؍-؟ؠ-ي٭-ٯٱ-ەۥ-ۦۮ-ۯۺ-ۿ܀-ࣿיִ-﷿ﹰ-﻿]/;
+var DIGIT = /\p{Nd}/u;
+var MARK_ONLY = /^\s*[\p{M}ـ]+\s*$/u;
+var NOISE = /[‎‏‪-‮⁦-⁩﻿­]/g;
+function strengthOf(ch) {
+  if (RTL_LETTER.test(ch)) return "R";
+  if (DIGIT.test(ch)) return "L";
+  if (/\p{L}/u.test(ch)) return "L";
+  return "N";
+}
+function itemStrength(text) {
+  let r = 0;
+  let l = 0;
+  for (const ch of text) {
+    const s = strengthOf(ch);
+    if (s === "R") r++;
+    else if (s === "L") l++;
+  }
+  if (!r && !l) return "N";
+  return r >= l ? "R" : "L";
+}
+function normalizePdfText(text) {
+  return text.normalize("NFKC").replace(NOISE, "");
+}
+function foldForSearch(text) {
+  return normalizePdfText(text).replace(/[يىی]/g, "\u06CC").replace(/[كک]/g, "\u06A9").replace(/[ةۀ]/g, "\u0647").replace(/[۰-۹]/g, (d) => String(d.charCodeAt(0) - 1776)).replace(/[٠-٩]/g, (d) => String(d.charCodeAt(0) - 1632)).replace(/[ً-ٰٟـ‌‍]/g, "").toLowerCase();
+}
+function hasPositions(items) {
+  let positioned = 0;
+  for (const item of items) if (Array.isArray(item.transform) && item.transform.length >= 6 && typeof item.width === "number") positioned++;
+  return positioned > 0 && positioned >= items.filter((i) => (i.str ?? "").length > 0).length;
+}
+function upright(item) {
+  const t = item.transform;
+  return Math.abs(t[1]) < 0.2 * Math.abs(t[0] || 1) && Math.abs(t[2]) < 0.2 * Math.abs(t[3] || 1);
+}
+function streamText(items) {
+  let text = "";
+  for (const item of items) {
+    text += item.str ?? "";
+    text += item.hasEOL ? "\n" : " ";
+  }
+  return text.replace(/[ \t]+\n/g, "\n").replace(/ {2,}/g, " ").replace(/\n{3,}/g, "\n\n").trim();
+}
+function median(values) {
+  if (!values.length) return 0;
+  const sorted = [...values].sort((a, b) => a - b);
+  return sorted[Math.floor(sorted.length / 2)];
+}
+function toBoxes(items) {
+  const boxes = [];
+  for (const item of items) {
+    let text = item.str ?? "";
+    if (!text) continue;
+    const t = item.transform;
+    const mark = MARK_ONLY.test(text);
+    if (mark) text = text.trim();
+    else text = text.replace(/ /g, " ");
+    const normalized = normalizePdfText(text);
+    if (!normalized) continue;
+    const h = Math.abs(item.height || t[3] || 0) || Math.abs(t[3]) || 10;
+    boxes.push({ text: normalized, x: t[4], y: t[5], w: Math.max(0, item.width ?? 0), h, mark, strength: itemStrength(normalized) });
+  }
+  return boxes;
+}
+function toLines(boxes) {
+  const real = boxes.filter((b) => !b.mark && b.text.trim());
+  const body = median(real.map((b) => b.h)) || 10;
+  const sorted = [...boxes].sort((a, b) => b.y - a.y || a.x - b.x);
+  const lines = [];
+  for (const box of sorted) {
+    const tolerance = Math.max(2, Math.min(box.h, body) * 0.45);
+    const line = lines.find((l) => Math.abs(l.y - box.y) <= tolerance);
+    if (line) {
+      line.boxes.push(box);
+      line.h = Math.max(line.h, box.mark ? 0 : box.h);
+    } else {
+      lines.push({ boxes: [box], y: box.y, h: box.mark ? 0 : box.h });
+    }
+  }
+  for (const line of lines) if (!line.h) line.h = body;
+  return lines.sort((a, b) => b.y - a.y);
+}
+var MIRROR = { "(": ")", ")": "(", "[": "]", "]": "[", "{": "}", "}": "{", "<": ">", ">": "<", "\xAB": "\xBB", "\xBB": "\xAB", "\u2039": "\u203A", "\u203A": "\u2039" };
+function mirrored(text) {
+  let out = "";
+  for (const ch of text) out += MIRROR[ch] ?? ch;
+  return out;
+}
+function attachMarks(boxes) {
+  const bases = boxes.filter((b) => !b.mark);
+  if (!bases.length) return boxes.filter((b) => !b.mark || b.text);
+  for (const mark of boxes) {
+    if (!mark.mark) continue;
+    let best = null;
+    let bestDistance = Infinity;
+    for (const base of bases) {
+      if (!base.text.trim()) continue;
+      const centre = base.x + base.w / 2;
+      const inside = mark.x >= base.x - 1.5 && mark.x <= base.x + base.w + 1.5;
+      const distance = inside ? Math.abs(mark.x - centre) : 1e3 + Math.min(Math.abs(mark.x - base.x), Math.abs(mark.x - (base.x + base.w)));
+      if (Math.abs(mark.y - base.y) > Math.max(6, base.h)) continue;
+      if (distance < bestDistance) {
+        best = base;
+        bestDistance = distance;
+      }
+    }
+    if (best) best.text += mark.text;
+  }
+  return bases;
+}
+function lineText(line) {
+  const visual = attachMarks(line.boxes).sort((a, b) => a.x - b.x);
+  const position = /* @__PURE__ */ new Map();
+  visual.forEach((box, index) => position.set(box, index));
+  let rtl = 0;
+  let ltr = 0;
+  for (const box of visual) {
+    for (const ch of box.text) {
+      const strength = strengthOf(ch);
+      if (strength === "R") rtl++;
+      else if (strength === "L") ltr++;
+    }
+  }
+  const base = rtl > ltr ? "R" : "L";
+  const runs = [];
+  for (const box of visual) {
+    const strength = box.strength;
+    const last = runs[runs.length - 1];
+    if (strength === "N") {
+      if (last) last.boxes.push(box);
+      else runs.push({ strength: "N", boxes: [box] });
+      continue;
+    }
+    if (last && (last.strength === strength || last.strength === "N")) {
+      last.strength = strength;
+      last.boxes.push(box);
+    } else {
+      runs.push({ strength, boxes: [box] });
+    }
+  }
+  for (const run of runs) if (run.strength === "N") run.strength = base;
+  const merged = [];
+  for (const run of runs) {
+    const last = merged[merged.length - 1];
+    if (last && last.strength === run.strength) last.boxes.push(...run.boxes);
+    else merged.push({ strength: run.strength, boxes: [...run.boxes] });
+  }
+  const ordered = base === "R" ? [...merged].reverse() : merged;
+  const sequence = [];
+  for (const run of ordered) {
+    const boxes = run.strength === "R" ? [...run.boxes].reverse() : run.boxes;
+    for (const box of boxes) sequence.push({ box, text: run.strength === "R" ? mirrored(box.text) : box.text });
+  }
+  let out = "";
+  let previous = null;
+  const space = Math.max(1.5, line.h * 0.22);
+  const column = Math.max(10, line.h * 1.6);
+  for (const current of sequence) {
+    const { box, text } = current;
+    if (!text.trim()) {
+      out += box.w > column ? " | " : " ";
+      previous = current;
+      continue;
+    }
+    if (previous) {
+      const joined = /[\s|]$/.test(out) || /^\s/.test(text);
+      if (!joined) {
+        const sideBySide = Math.abs((position.get(previous.box) ?? 0) - (position.get(box) ?? 0)) === 1;
+        if (!sideBySide) out += " ";
+        else {
+          const gap = previous.box.x < box.x ? box.x - (previous.box.x + previous.box.w) : previous.box.x - (box.x + box.w);
+          if (gap > column) out += " | ";
+          else if (gap > space) out += " ";
+        }
+      }
+    }
+    out += text;
+    previous = current;
+  }
+  return out.replace(/[ \t]{2,}/g, " ").replace(/^\s*\|\s*|\s*\|\s*$/g, "").trim();
+}
+function layoutPageText(items) {
+  const usable = items.filter((i) => (i.str ?? "").length > 0 || i.hasEOL);
+  if (!usable.length) return "";
+  if (!hasPositions(usable) || !usable.filter((i) => (i.str ?? "").length > 0).every((i) => !i.transform || upright(i))) {
+    return streamText(items);
+  }
+  const lines = toLines(toBoxes(items));
+  const out = [];
+  let previous = null;
+  for (const line of lines) {
+    const text = lineText(line);
+    if (!text) continue;
+    if (previous) {
+      const gap = previous.y - line.y;
+      if (gap > previous.h * 1.75) out.push("");
+    }
+    out.push(text);
+    previous = line;
+  }
+  return out.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+}
+function judgeText(text) {
+  const compact = text.replace(/\s+/g, "");
+  const chars = compact.length;
+  if (!chars) return { chars, readable: false };
+  let letters = 0;
+  let bad = 0;
+  for (const ch of compact) {
+    if (/[\p{L}\p{N}]/u.test(ch)) letters++;
+    const code = ch.codePointAt(0);
+    if (ch === "\uFFFD" || code >= 57344 && code <= 63743 || code < 32 && ch !== "	") bad++;
+  }
+  const cid = (text.match(/\(cid:\d+\)/g) ?? []).length;
+  if (cid > 3) return { chars, readable: false };
+  return { chars, readable: bad / chars < 0.1 && letters / chars > (chars < 12 ? 0.3 : 0.45) };
+}
+function parsePageRanges(spec, total) {
+  const text = String(spec ?? "").trim().toLowerCase();
+  if (!text) return [];
+  if (text === "all") return Array.from({ length: total }, (_, i) => i + 1);
+  const pages = /* @__PURE__ */ new Set();
+  for (const part of text.split(/[,;\s]+/).filter(Boolean)) {
+    const range = /^(\d*)\s*[-–:]\s*(\d*)$/.exec(part);
+    if (range) {
+      const from = range[1] ? Number(range[1]) : 1;
+      const to = range[2] ? Number(range[2]) : total;
+      for (let n = Math.max(1, Math.min(from, to)); n <= Math.min(total, Math.max(from, to)); n++) pages.add(n);
+    } else if (/^\d+$/.test(part)) {
+      const n = Number(part);
+      if (n >= 1 && n <= total) pages.add(n);
+    }
+  }
+  return [...pages].sort((a, b) => a - b);
+}
+function describePages(pages) {
+  const out = [];
+  let start = 0;
+  for (let i = 0; i < pages.length; i++) {
+    if (i === 0) {
+      start = pages[0];
+      continue;
+    }
+    if (pages[i] !== pages[i - 1] + 1) {
+      out.push(start === pages[i - 1] ? String(start) : `${start}-${pages[i - 1]}`);
+      start = pages[i];
+    }
+  }
+  if (pages.length) out.push(start === pages[pages.length - 1] ? String(start) : `${start}-${pages[pages.length - 1]}`);
+  return out.join(", ");
+}
+var renderPdfPage = async (doc, n, maxSide = 1600) => {
+  if (typeof document === "undefined") return null;
+  const page = await doc.getPage(n);
+  const base = page.getViewport({ scale: 1 });
+  const scale = Math.min(2, maxSide / Math.max(base.width, base.height));
+  const viewport = page.getViewport({ scale });
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.ceil(viewport.width);
+  canvas.height = Math.ceil(viewport.height);
+  const context = canvas.getContext("2d");
+  if (!context) return null;
+  context.fillStyle = "#fff";
+  context.fillRect(0, 0, canvas.width, canvas.height);
+  await page.render({ canvasContext: context, viewport }).promise;
+  return { data: canvas.toDataURL("image/jpeg", 0.85).split(",")[1] ?? "", mimeType: "image/jpeg" };
+};
+var PdfReader = class {
+  constructor(doc, name, renderer = renderPdfPage) {
+    this.doc = doc;
+    this.name = name;
+    this.renderer = renderer;
+    this.cache = /* @__PURE__ */ new Map();
+  }
+  get pages() {
+    return this.doc.numPages;
+  }
+  async page(n) {
+    const hit = this.cache.get(n);
+    if (hit) return hit;
+    let text = "";
+    try {
+      const page = await this.doc.getPage(n);
+      const content = await page.getTextContent();
+      text = layoutPageText(content.items ?? []);
+    } catch (error) {
+      text = "";
+    }
+    const quality = judgeText(text);
+    const result = { n, text: quality.readable ? text : "", chars: quality.readable ? quality.chars : 0, readable: quality.readable };
+    this.cache.set(n, result);
+    return result;
+  }
+  async title() {
+    try {
+      const meta = await this.doc.getMetadata?.();
+      const title = meta?.info?.Title;
+      return typeof title === "string" ? normalizePdfText(title).trim() : "";
+    } catch {
+      return "";
+    }
+  }
+  /** Reads pages in order until `maxChars`, whole pages only (the last one cut if it alone is too long). */
+  async read(pages, maxChars, shouldStop) {
+    const parts = [];
+    const shown = [];
+    const empty = [];
+    let total = 0;
+    let stoppedBefore;
+    for (const n of pages) {
+      if (shouldStop?.()) {
+        stoppedBefore = n;
+        break;
+      }
+      const page = await this.page(n);
+      if (!page.readable) {
+        empty.push(n);
+        continue;
+      }
+      const block = `[Page ${n}]
+${page.text}`;
+      if (total + block.length > maxChars) {
+        if (!shown.length) {
+          const cut = truncateMiddle(block, maxChars, `Ask for a smaller part of page ${n}`);
+          parts.push(cut.text);
+          shown.push(n);
+          total += cut.text.length;
+          continue;
+        }
+        stoppedBefore = n;
+        break;
+      }
+      parts.push(block);
+      shown.push(n);
+      total += block.length + 2;
+    }
+    return { text: parts.join("\n\n"), shown, stoppedBefore, empty };
+  }
+  /**
+   * The first words of each page, to find one's way around. A long document is not read through for this: the first pages
+   * are, and a few spread over the rest tell roughly how much text there is.
+   */
+  async overview(limitPages = 80) {
+    const lines = [];
+    const unreadable = [];
+    const total = this.pages;
+    const examined = /* @__PURE__ */ new Set();
+    for (let n = 1; n <= Math.min(total, limitPages); n++) examined.add(n);
+    let sampled = false;
+    if (total > limitPages) {
+      sampled = true;
+      const step = Math.max(1, Math.floor((total - limitPages) / 12));
+      for (let n = limitPages + step; n <= total; n += step) examined.add(n);
+    }
+    let chars = 0;
+    for (const n of [...examined].sort((a, b) => a - b)) {
+      const page = await this.page(n);
+      chars += page.chars;
+      if (!page.readable) {
+        unreadable.push(n);
+        if (n <= limitPages) lines.push(`${n}: (no text layer)`);
+        continue;
+      }
+      if (n <= limitPages) {
+        const first = page.text.split("\n").map((t) => t.trim()).filter(Boolean).slice(0, 2).join(" \u2014 ");
+        lines.push(`${n}: ${first.length > 110 ? first.slice(0, 107) + "\u2026" : first}`);
+      }
+    }
+    const totalChars = sampled ? Math.round(chars / examined.size * total) : chars;
+    return { lines, unreadable, totalChars, sampled };
+  }
+  async search(query, limit = 15) {
+    const needle = foldForSearch(query).trim();
+    if (!needle) return [];
+    const found = [];
+    for (let n = 1; n <= this.pages && found.length < limit; n++) {
+      const page = await this.page(n);
+      if (!page.readable) continue;
+      const hay = foldForSearch(page.text);
+      let hits = 0;
+      let at = hay.indexOf(needle);
+      const first = at;
+      while (at >= 0 && hits < 500) {
+        hits++;
+        at = hay.indexOf(needle, at + needle.length);
+      }
+      if (!hits) continue;
+      const original = page.text;
+      const centre = Math.min(original.length, Math.max(0, first));
+      const from = Math.max(0, centre - 70);
+      const snippet = original.slice(from, centre + needle.length + 90).replace(/\s+/g, " ").trim();
+      found.push({ page: n, hits, snippet: `${from > 0 ? "\u2026" : ""}${snippet}${centre + needle.length + 90 < original.length ? "\u2026" : ""}` });
+    }
+    return found;
+  }
+  async render(n, maxSide) {
+    try {
+      return await this.renderer(this.doc, n, maxSide);
+    } catch {
+      return null;
+    }
+  }
+  destroy() {
+    try {
+      this.doc.destroy?.();
+    } catch {
+    }
+  }
+};
+var MAX_OPEN = 3;
+var PdfLibrary = class {
+  constructor(load, renderer = renderPdfPage) {
+    this.load = load;
+    this.renderer = renderer;
+    this.open = /* @__PURE__ */ new Map();
+    this.attached = /* @__PURE__ */ new Map();
+  }
+  setLoader(load) {
+    this.load = load;
+  }
+  /** A PDF the person attached: kept in memory for as long as the chat is open, so that pages can be read later. */
+  addAttachment(name, bytes) {
+    const key = name.toLowerCase();
+    this.attached.delete(key);
+    this.attached.set(key, { name, bytes });
+    const old = this.open.get(`attachment:${name}`);
+    if (old) {
+      old.destroy();
+      this.open.delete(`attachment:${name}`);
+    }
+    let bytesHeld = 0;
+    for (const entry of this.attached.values()) bytesHeld += entry.bytes.length;
+    while (this.attached.size > 8 || this.attached.size > 1 && bytesHeld > 96 * 1024 * 1024) {
+      const first = this.attached.keys().next().value;
+      bytesHeld -= this.attached.get(first).bytes.length;
+      this.attached.delete(first);
+    }
+  }
+  attachmentNames() {
+    return [...this.attached.values()].map((a) => a.name);
+  }
+  findAttachment(name) {
+    const all = [...this.attached.values()];
+    if (!all.length) return { error: "No PDF has been attached to this chat. Use find_pdfs to look for one in the vault and give its path." };
+    const wanted = String(name ?? "").trim().toLowerCase();
+    if (!wanted) {
+      if (all.length === 1) return all[0];
+      return { error: `Several PDFs are attached (${all.map((a) => a.name).join(", ")}). Say which with "attachment".` };
+    }
+    const found = all.find((a) => a.name.toLowerCase() === wanted) ?? all.find((a) => a.name.toLowerCase().includes(wanted) || wanted.includes(a.name.toLowerCase()));
+    if (!found) return { error: `No attached PDF is called "${name}". Attached: ${all.map((a) => a.name).join(", ")}.` };
+    return found;
+  }
+  async reader(key, bytes, label) {
+    const hit = this.open.get(key);
+    if (hit) {
+      this.open.delete(key);
+      this.open.set(key, hit);
+      return hit;
+    }
+    const pdfjs = await this.load();
+    const doc = await pdfjs.getDocument({ data: new Uint8Array(bytes) }).promise;
+    const reader = new PdfReader(doc, label, this.renderer);
+    this.open.set(key, reader);
+    while (this.open.size > MAX_OPEN) {
+      const oldest = this.open.keys().next().value;
+      this.open.get(oldest)?.destroy();
+      this.open.delete(oldest);
+    }
+    return reader;
+  }
+  closeAll() {
+    for (const reader of this.open.values()) reader.destroy();
+    this.open.clear();
+  }
+};
+var DEFAULT_MAX_CHARS = 24e3;
+var FULL_TEXT_LIMIT = 14e3;
+var MAX_IMAGES_PER_CALL = 4;
+function imageLine(name, image) {
+  return JSON.stringify({ name, mime: image.mimeType, dataUri: `data:${image.mimeType};base64,${image.data}` });
+}
+async function pagesAsPictures(reader, pages, env, label) {
+  const take = pages.slice(0, MAX_IMAGES_PER_CALL);
+  const images = [];
+  for (const n of take) {
+    const image = await reader.render(n);
+    if (image?.data) images.push({ ...image, page: n });
+  }
+  const lines = [];
+  if (!images.length) {
+    lines.push(`Page${take.length > 1 ? "s" : ""} ${describePages(take)} of ${label} could not be drawn here.`);
+  } else if (env.vision) {
+    for (const image of images) lines.push(imageLine(`${label} page ${image.page}`, image));
+  } else if (env.describe) {
+    const described = await env.describe(images, label);
+    if (described) lines.push(`[Pages ${describePages(images.map((i) => i.page))} of ${label}, read by a vision model]
+${described}`);
+    else lines.push(`Pages ${describePages(take)} of ${label} have no readable text and this model cannot see images; no vision model is available to read them. Say so plainly.`);
+  } else {
+    lines.push(`Pages ${describePages(take)} of ${label} have no readable text and this model cannot see images; no vision model is available to read them. Say so plainly.`);
+  }
+  if (pages.length > take.length) lines.push(`(${pages.length - take.length} more such pages: ask for them in another call, ${MAX_IMAGES_PER_CALL} at a time.)`);
+  return lines.join("\n");
+}
+async function readPdfTool(args, env) {
+  let reader;
+  let label;
+  try {
+    if (args.path) {
+      const found = await env.readVault(String(args.path));
+      if (!found) return `PDF not found: ${args.path}. Use find_pdfs to list the PDFs in the vault.`;
+      label = String(args.path).split("/").pop() || String(args.path);
+      reader = await env.library.reader(`vault:${found.key}`, found.bytes, label);
+    } else {
+      const found = env.library.findAttachment(args.attachment);
+      if ("error" in found) return found.error;
+      label = found.name;
+      reader = await env.library.reader(`attachment:${found.name}`, found.bytes, label);
+    }
+  } catch (error) {
+    return `The PDF could not be opened: ${String(error?.message ?? error).slice(0, 200)}`;
+  }
+  const maxChars = env.maxChars ?? DEFAULT_MAX_CHARS;
+  const total = reader.pages;
+  const wanted = parsePageRanges(args.pages, total);
+  if (args.view) {
+    const pages = wanted.length ? wanted : [1];
+    return pagesAsPictures(reader, pages, env, label);
+  }
+  if (args.query && String(args.query).trim()) {
+    const hits = await reader.search(String(args.query));
+    if (!hits.length) {
+      const overview2 = await reader.overview(0);
+      const note = overview2.unreadable.length ? ` ${overview2.unreadable.length} page(s) have no text layer and could not be searched.` : "";
+      return `"${args.query}" does not appear in the text of ${label} (${total} pages).${note}`;
+    }
+    const lines = hits.map((h) => `Page ${h.page}${h.hits > 1 ? ` (${h.hits} times)` : ""}: ${h.snippet}`);
+    return `"${args.query}" in ${label} (${total} pages):
+${lines.join("\n")}
+
+Read a page with read_pdf and pages "${hits[0].page}".`;
+  }
+  if (wanted.length) {
+    const result = await reader.read(wanted, maxChars);
+    const out = [];
+    if (result.text) out.push(result.text);
+    if (result.empty.length) {
+      out.push(await pagesAsPictures(reader, result.empty, env, label));
+    }
+    if (result.stoppedBefore !== void 0) {
+      const rest = wanted.filter((n) => n >= result.stoppedBefore);
+      out.push(`[Stopped after page ${result.shown[result.shown.length - 1]}: that is as much as one call returns. Continue with pages "${describePages(rest)}".]`);
+    }
+    if (!out.length) out.push(`No text could be read from pages ${describePages(wanted)} of ${label}.`);
+    return out.join("\n\n");
+  }
+  const overview = await reader.overview();
+  if (overview.totalChars > 0 && overview.totalChars <= FULL_TEXT_LIMIT) {
+    const all = await reader.read(Array.from({ length: total }, (_, i) => i + 1), maxChars);
+    const extra = all.empty.length ? `
+
+${await pagesAsPictures(reader, all.empty, env, label)}` : "";
+    return `${label}: ${total} page${total === 1 ? "" : "s"}.
+
+${all.text}${extra}`;
+  }
+  const title = await reader.title();
+  const readable = total - overview.unreadable.length;
+  const head = [
+    `${label}: ${total} pages${title ? `, titled "${title}"` : ""}${overview.sampled ? "" : `; ${readable} with text${overview.unreadable.length ? `, ${overview.unreadable.length} without (scanned or drawn: ${describePages(overview.unreadable.slice(0, 40))}${overview.unreadable.length > 40 ? ", \u2026" : ""})` : ""}`}.`,
+    `About ${Math.round(overview.totalChars / 4).toLocaleString("en-US")} tokens of text in all${overview.sampled ? " (estimated from the first 80 pages and a sample of the rest)" : ""}.${overview.sampled && overview.unreadable.length ? ` Pages without a text layer among those looked at: ${describePages(overview.unreadable.slice(0, 40))}.` : ""}`,
+    "",
+    `The first words of ${total > 80 ? "the first 80 pages" : "each page"}:`,
+    ...overview.lines,
+    "",
+    `To read: read_pdf with pages "1-5" (up to about ${Math.round(maxChars / 1e3)}k characters a call). To find something: read_pdf with query "\u2026". For a figure or a table as it looks: read_pdf with pages "3" and view true.`
+  ];
+  return head.join("\n");
+}
+
+// src/tools.ts
 var VAULT_TOOLS = /* @__PURE__ */ new Set([
   "read_note",
   "write_note",
@@ -2694,7 +3359,9 @@ var VAULT_TOOLS = /* @__PURE__ */ new Set([
   "list_folders",
   "create_folder",
   "move_note",
-  "trash_note"
+  "trash_note",
+  "read_pdf",
+  "find_pdfs"
 ]);
 var ToolRegistry = class {
   constructor(app) {
@@ -2703,6 +3370,16 @@ var ToolRegistry = class {
     this.grantedNotes = /* @__PURE__ */ new Set();
     this.grantedFolders = /* @__PURE__ */ new Set();
     this.vaultGranted = false;
+    /** The PDFs of this chat: the ones attached to it stay readable page by page, the ones in the vault are opened on request. */
+    this.pdf = new PdfLibrary(async () => {
+      const { loadPdfJs } = await import("obsidian");
+      return await loadPdfJs();
+    });
+    this.pdfCapabilities = { vision: false };
+  }
+  /** What the model that is running can be given from a PDF: pictures, a description made by another model, how much text per call. */
+  setPdfCapabilities(capabilities) {
+    this.pdfCapabilities = capabilities;
   }
   setAccessScope(scope) {
     const notePath = scope.notePath ? safeVaultPath(scope.notePath, true) : void 0;
@@ -2904,6 +3581,34 @@ var ToolRegistry = class {
         }
       },
       {
+        name: "read_pdf",
+        description: 'Read a PDF: one the user attached to this chat (give its name as "attachment", or nothing if there is only one) or one in the vault (give its "path"). With only that, it returns the page count and the first words of each page (a short PDF comes back whole). Give "pages" (e.g. "1-5" or "3,7,10-12") to read those pages as text, "query" to find which pages mention something, or "view": true with "pages" to get pages as pictures (figures, charts, tables, scanned pages). A long PDF has to be read in pieces: a call returns about 20k characters.',
+        parameters: {
+          type: "object",
+          properties: {
+            path: { type: "string", description: "Vault path of a PDF, e.g. 'Papers/report.pdf'" },
+            attachment: { type: "string", description: "Name of a PDF attached to this chat" },
+            pages: { type: "string", description: "Pages to read: '1-5', '3,7', '10-' (to the end) or 'all'" },
+            query: { type: "string", description: "Text to look for; returns the pages that contain it, with a snippet" },
+            view: { type: "boolean", description: "Return the pages as pictures instead of text (needs pages)" }
+          },
+          required: []
+        }
+      },
+      {
+        name: "find_pdfs",
+        description: "Find PDF files in the vault by folder/name. Returns paths and sizes; read one with read_pdf.",
+        parameters: {
+          type: "object",
+          properties: {
+            folder: { type: "string", description: "Folder path, or empty/vault for all vault PDFs" },
+            query: { type: "string", description: "Optional filename/path substring filter" },
+            limit: { type: "number", description: "Max results (default 30)" }
+          },
+          required: []
+        }
+      },
+      {
         name: "read_note_section",
         description: "Read one heading section from a markdown note. More efficient than reading the whole note.",
         parameters: {
@@ -3025,7 +3730,7 @@ var ToolRegistry = class {
   describeAccessRequest(name, args, reason) {
     const base = { toolName: name, currentMode: this.accessScope.mode, reason };
     if (name === "search_notes") return { ...base, requestedMode: "vault" };
-    if (["list_notes", "list_folders", "find_images"].includes(name)) {
+    if (["list_notes", "list_folders", "find_images", "find_pdfs"].includes(name)) {
       const folder = String(args.folder ?? "").trim();
       return !folder || folder === "vault" ? { ...base, requestedMode: "vault" } : { ...base, requestedMode: "folder", targetPath: folder };
     }
@@ -3061,6 +3766,7 @@ var ToolRegistry = class {
   }
   enforceAccess(name, args) {
     if (!VAULT_TOOLS.has(name) || this.accessScope.mode === "vault" || this.vaultGranted) return;
+    if (name === "read_pdf" && !String(args.path ?? "").trim()) return;
     const pathTools = /* @__PURE__ */ new Set([
       "read_note",
       "write_note",
@@ -3071,7 +3777,8 @@ var ToolRegistry = class {
       "read_note_section",
       "note_metadata",
       "note_links",
-      "trash_note"
+      "trash_note",
+      "read_pdf"
     ]);
     if (pathTools.has(name)) {
       this.assertPathAllowed(args.path, "path");
@@ -3093,7 +3800,7 @@ var ToolRegistry = class {
     if (name === "search_notes") {
       throw new Error(`Access denied: "${name}" needs whole-vault access.`);
     }
-    if (["list_notes", "list_folders", "find_images"].includes(name)) {
+    if (["list_notes", "list_folders", "find_images", "find_pdfs"].includes(name)) {
       const requested = String(args.folder ?? "").trim();
       if (!requested || requested === "vault") {
         throw new Error(`Access denied: "${name}" needs whole-vault access.`);
@@ -3148,6 +3855,10 @@ var ToolRegistry = class {
         return this.fetchUrl(args.url);
       case "find_images":
         return this.findImages(args.folder, args.query, args.limit ?? 30);
+      case "read_pdf":
+        return this.readPdf(args);
+      case "find_pdfs":
+        return this.findPdfs(args.folder, args.query, args.limit ?? 30);
       case "read_note_section":
         return this.readNoteSection(args.path, args.heading);
       case "note_metadata":
@@ -3278,6 +3989,15 @@ ${head}`;
     const active = capturedPath ? this.app.vault.getFileByPath(capturedPath) : this.app.workspace.getActiveFile();
     if (!active) return "No note available in the selected context.";
     if (!this.isPathAllowed(active.path)) throw new Error("Access denied: active note is outside the selected context.");
+    const extension = String(active.extension ?? "").toLowerCase();
+    if (extension === "pdf") {
+      return `The open file is a PDF: ${active.path}
+
+Read it with read_pdf (path "${active.path}"): with no other argument it returns the page count and the first words of each page, with "pages" it reads them, with "query" it finds where something is said.`;
+    }
+    if (extension && !["md", "txt", "markdown", "canvas", "json", "csv"].includes(extension)) {
+      return `The open file is ${active.path}, which is not a note (${extension}); it cannot be read as text.`;
+    }
     const content = await this.app.vault.cachedRead(active);
     return `Current note path: ${active.path}
 
@@ -3488,6 +4208,39 @@ Safety backup: ${backup}`;
     });
     if (!id) return `Plugin not found: ${query}`;
     return JSON.stringify({ id, enabled: enabled.has(id), ...manifests[id] }, null, 2);
+  }
+  async readPdf(args) {
+    return readPdfTool(args, {
+      library: this.pdf,
+      ...this.pdfCapabilities,
+      readVault: async (path) => {
+        const file = this.app.vault.getFileByPath(safeVaultPath(path));
+        if (!file || file.extension.toLowerCase() !== "pdf") return null;
+        const buffer = await this.app.vault.readBinary(file);
+        const stat = file.stat;
+        return { bytes: new Uint8Array(buffer), key: `${file.path}:${stat?.mtime ?? 0}:${stat?.size ?? buffer.byteLength}` };
+      }
+    });
+  }
+  findPdfs(folder, query, limit) {
+    const root = this.app.vault.getRoot();
+    let base = root;
+    if (folder && folder !== "vault") {
+      const f = this.app.vault.getFolderByPath(safeVaultPath(folder));
+      if (!f) return `Folder not found: ${folder}`;
+      base = f;
+    }
+    const q = String(query ?? "").toLowerCase().trim();
+    const out = [];
+    VaultWalker(base, (file) => {
+      if (out.length >= limit) return;
+      if (!this.isPathAllowed(file.path)) return;
+      if (!/\.pdf$/i.test(file.path)) return;
+      if (q && !file.path.toLowerCase().includes(q)) return;
+      const stat = file.stat;
+      out.push(`- ${file.path}${stat?.size ? ` (${Math.round(stat.size / 1024)} KB)` : ""}`);
+    });
+    return out.length ? out.join("\n") : "No matching PDFs found.";
   }
   findImages(folder, query, limit) {
     const root = this.app.vault.getRoot();
@@ -3729,78 +4482,6 @@ function formatTokens(n) {
   if (n < 1e4) return `${(n / 1e3).toFixed(1).replace(/\.0$/, "")}k`;
   if (n < 1e6) return `${Math.round(n / 1e3)}k`;
   return `${(n / 1e6).toFixed(n < 1e7 ? 2 : 1).replace(/\.?0+$/, "")}M`;
-}
-
-// src/harness/tool-output.ts
-var CHARS_PER_TOKEN = 3;
-function toolOutputTokenBudget(contextWindow) {
-  return Math.max(1500, Math.min(5e4, Math.floor(contextWindow * 0.2)));
-}
-function extractImages(output, vision) {
-  const images = [];
-  let found = 0;
-  const lines = output.split("\n");
-  const kept = [];
-  for (const line of lines) {
-    const trimmed = line.trim();
-    if (trimmed.startsWith("{") && trimmed.includes('"dataUri"')) {
-      try {
-        const item = JSON.parse(trimmed);
-        const m = /^data:([^;,]+);base64,(.+)$/s.exec(item.dataUri ?? "");
-        if (m) {
-          found++;
-          const kb = Math.round(m[2].length * 3 / 4 / 1024);
-          const label = item.name ?? "image";
-          if (vision) {
-            images.push({ type: "image", mimeType: item.mime ?? m[1], data: m[2], name: label });
-            kept.push(`[Image: ${label} (${item.mime ?? m[1]}, ${kb} KB), shown to you in the next message]`);
-          } else {
-            kept.push(`[Image: ${label} (${item.mime ?? m[1]}, ${kb} KB), not shown: this model cannot see images]`);
-          }
-          continue;
-        }
-      } catch {
-      }
-    }
-    kept.push(line);
-  }
-  return { text: kept.join("\n"), images, found };
-}
-function stripInlineDataUris(text) {
-  return text.replace(/data:[a-z0-9.+-]+\/[a-z0-9.+-]+;base64,[A-Za-z0-9+/=]{800,}/gi, (m) => `[base64 data omitted: ${Math.round(m.length / 1024)} KB]`);
-}
-function truncateMiddle(text, maxChars, hint) {
-  if (text.length <= maxChars) return { text, truncated: false };
-  const note = `
-
-[\u2026 ${text.length - maxChars} of ${text.length} characters omitted from the middle. ${hint}]
-
-`;
-  const budget = Math.max(200, maxChars - note.length);
-  const head = Math.floor(budget * 0.7);
-  const tail = budget - head;
-  return { text: text.slice(0, head) + note + text.slice(text.length - tail), truncated: true };
-}
-var HINTS = {
-  read_note: "Ask for one part with read_note_section, or look for specific text with search_notes",
-  current_note: "Ask for one part with read_note_section, or look for specific text with search_notes",
-  summarize_note: "Ask for one part with read_note_section",
-  fetch_url: "Fetch a narrower page, or search for the specific part you need",
-  web_search: "Narrow the query"
-};
-function prepareToolOutput(name, output, opts) {
-  const original = String(output ?? "");
-  const { text: withoutImages, images, found } = extractImages(original, opts.vision);
-  const cleaned = stripInlineDataUris(withoutImages);
-  const maxChars = toolOutputTokenBudget(opts.contextWindow) * CHARS_PER_TOKEN;
-  const cut = truncateMiddle(cleaned, maxChars, HINTS[name] ?? "Ask for a smaller part of it");
-  return {
-    text: cut.text,
-    images,
-    truncated: cut.truncated,
-    originalChars: original.length,
-    imagesFound: found
-  };
 }
 
 // src/harness/context-manager.ts
@@ -4895,7 +5576,7 @@ function planFor(kind, profile, helperAvailable) {
       if (profile.vision) return { plan: "native", label: "The model will see this image." };
       return helperAvailable ? { plan: "described", label: "This model cannot see images: another model will describe it first." } : { plan: "listed", label: "This model cannot see images and none is set up to describe it: the model will only be told it was attached." };
     case "pdf":
-      return profile.pdfNative ? { plan: "native", label: "The PDF is sent as it is; the provider reads its pages." } : { plan: "text", label: profile.vision ? "The text is read out of the PDF; scanned pages are shown to the model." : helperAvailable ? "The text is read out of the PDF; scanned pages are described by another model." : "The text is read out of the PDF (scanned pages cannot be read)." };
+      return profile.pdfNative ? { plan: "native", label: "The PDF is sent as it is; the provider reads its pages." } : { plan: "text", label: profile.vision ? "The text is read out of the PDF; scanned pages are shown to the model, and it can read the other pages on request." : helperAvailable ? "The text is read out of the PDF; scanned pages are described by another model, and the model can read the other pages on request." : "The text is read out of the PDF (scanned pages cannot be read); the model can read the other pages on request." };
     case "audio":
       return profile.providerType === "gemini" ? { plan: "native", label: "The model will listen to this audio." } : helperAvailable ? { plan: "described", label: "Another model will transcribe it first." } : { plan: "listed", label: "This model cannot listen: it will only be told the audio was attached." };
     case "docx":
@@ -5062,57 +5743,11 @@ ${rows.join("\n")}${omitted ? `
   });
   return out.join("\n\n");
 }
-async function pdfToText(doc, maxChars, shouldStop) {
-  const pages = doc.numPages;
-  const out = [];
-  let total = 0;
-  let textPages = 0;
-  let truncated = false;
-  for (let n = 1; n <= Math.min(pages, MAX_PDF_PAGES_AS_TEXT); n++) {
-    if (shouldStop?.()) break;
-    const page = await doc.getPage(n);
-    const content = await page.getTextContent();
-    let text = "";
-    for (const item of content.items) {
-      text += item.str ?? "";
-      text += item.hasEOL ? "\n" : " ";
-    }
-    text = text.replace(/[ \t]+\n/g, "\n").replace(/ {2,}/g, " ").replace(/\n{3,}/g, "\n\n").trim();
-    if (text.length >= 40) textPages++;
-    const block = `[Page ${n}]
-${text}`;
-    if (total + block.length > maxChars) {
-      out.push(block.slice(0, Math.max(0, maxChars - total)) + "\n[\u2026]");
-      truncated = true;
-      break;
-    }
-    out.push(block);
-    total += block.length + 2;
-  }
-  if (!truncated && pages > MAX_PDF_PAGES_AS_TEXT) truncated = true;
-  return { pages, textPages, text: out.join("\n\n"), truncated };
-}
 function countPdfPages(bytes) {
   const head = Buffer.from(bytes.subarray(0, Math.min(bytes.length, 4e6))).toString("latin1");
   const counts = [...head.matchAll(/\/Count\s+(\d+)/g)].map((m) => Number(m[1]));
   if (counts.length) return Math.max(...counts);
   return (head.match(/\/Type\s*\/Page[^s]/g) ?? []).length || 1;
-}
-async function renderPdfPage(doc, n, maxSide = 1600) {
-  if (typeof document === "undefined") return null;
-  const page = await doc.getPage(n);
-  const base = page.getViewport({ scale: 1 });
-  const scale = Math.min(2, maxSide / Math.max(base.width, base.height));
-  const viewport = page.getViewport({ scale });
-  const canvas = document.createElement("canvas");
-  canvas.width = Math.ceil(viewport.width);
-  canvas.height = Math.ceil(viewport.height);
-  const context = canvas.getContext("2d");
-  if (!context) return null;
-  context.fillStyle = "#fff";
-  context.fillRect(0, 0, canvas.width, canvas.height);
-  await page.render({ canvasContext: context, viewport }).promise;
-  return { data: canvas.toDataURL("image/jpeg", 0.85).split(",")[1] ?? "", mimeType: "image/jpeg" };
 }
 async function downscaleImage(data, mime, maxSide = 2e3) {
   if (typeof document === "undefined" || typeof Image === "undefined") return null;
@@ -5220,22 +5855,30 @@ ${cut.text}
         const pages = countPdfPages(bytes);
         if (profile.pdfNative && bytes.length <= 30 * 1024 * 1024 && pages <= 100) {
           outParts.push({ type: "pdf", data: part.data, mimeType: "application/pdf", name, metadata: { pages } });
-          blocks.push(`[Attached PDF: ${name} (${pages} pages), given to you whole.]`);
+          blocks.push(`[Attached PDF: ${name} (${pages} pages), given to you whole. The read_pdf tool can also read or search it by page.]`);
           note(`sent as a PDF (${pages} pages)`);
         } else {
           notice(`Reading ${name}\u2026`);
           const pdfjs = await loadPdf();
           const doc = await pdfjs.getDocument({ data: new Uint8Array(bytes) }).promise;
+          const reader = new PdfReader(doc, name, env.renderPage);
           try {
-            const text = await pdfToText(doc, Math.floor(remaining / Math.max(1, pending)), () => signal.aborted);
-            const scanned = text.textPages < Math.max(1, Math.ceil(text.pages / 2));
-            if (text.textPages > 0) {
-              const cut = addText(`${name} (PDF, ${text.pages} pages)`, text.text, "Ask for specific pages or a specific part");
-              note(`read ${text.textPages} of ${text.pages} pages as text${cut || text.truncated ? " (cut to fit)" : ""}`);
+            const total = doc.numPages;
+            const share = Math.max(1500, Math.floor(remaining / Math.max(1, pending)));
+            const all = Array.from({ length: Math.min(total, MAX_PDF_PAGES_AS_TEXT) }, (_, i) => i + 1);
+            const read = await reader.read(all, share, () => signal.aborted);
+            const examined = read.shown.length + read.empty.length;
+            const scanned = read.shown.length < Math.max(1, Math.ceil(examined / 2));
+            if (read.shown.length > 0) {
+              const last = read.shown[read.shown.length - 1];
+              const rest = last < total ? ` ${last + 1 === total ? `Page ${total} is` : `Pages ${last + 1}-${total} are`} not included here: read them with the read_pdf tool (attachment "${name}", pages "${last + 1}-${Math.min(total, last + 20)}"), or find where something is with its query.` : "";
+              const cut = addText(`${name} (PDF, ${total} pages)`, `${read.text}${rest ? `
+
+[${rest.trim()}]` : ""}`, "Read other pages with read_pdf");
+              note(`read ${read.shown.length} of ${total} pages as text${cut || last < total ? " (the rest can be read with read_pdf)" : ""}`);
             }
             if (scanned) {
-              const need = [];
-              for (let n = 1; n <= Math.min(text.pages, MAX_RENDERED_PAGES); n++) need.push(n);
+              const need = read.empty.slice(0, MAX_RENDERED_PAGES);
               const render = env.renderPage ?? renderPdfPage;
               const images = [];
               for (const n of need) {
@@ -5245,7 +5888,7 @@ ${cut.text}
               }
               if (images.length && profile.vision) {
                 for (const img of images) outParts.push({ type: "image", data: img.data, mimeType: img.mimeType, name: `${name} page ${img.n}` });
-                blocks.push(`[${name} has pages with no text layer (scanned). The first ${images.length} page image(s) are shown to you${text.pages > images.length ? `; the document has ${text.pages} pages` : ""}.]`);
+                blocks.push(`[${name} has pages with no text layer (scanned). Page image(s) ${describePages(images.map((i) => i.n))} are shown to you${total > images.length ? `; the document has ${total} pages, and read_pdf can show more of them` : ""}.]`);
                 note(`scanned: ${images.length} page(s) drawn and shown`);
               } else if (images.length) {
                 notice(`Reading scanned pages of ${name} with a vision model\u2026`);
@@ -5255,7 +5898,7 @@ ${cut.text}
                   const out = await args.describe(
                     [
                       { role: "system", content: DESCRIBE_SYSTEM },
-                      { role: "user", content: `These are pages ${batch[0].n}\u2013${batch[batch.length - 1].n} of the document "${name}". Transcribe each page in order, starting each with [Page N].`, parts: batch.map((b) => ({ type: "image", data: b.data, mimeType: b.mimeType, name: `${name} page ${b.n}` })) }
+                      { role: "user", content: `These are pages ${batch.map((b) => b.n).join(", ")} of the document "${name}". Transcribe each page in order, starting each with [Page N].`, parts: batch.map((b) => ({ type: "image", data: b.data, mimeType: b.mimeType, name: `${name} page ${b.n}` })) }
                     ],
                     signal
                   );
@@ -5268,13 +5911,13 @@ ${cut.text}
                   blocks.push(`[The PDF "${name}" is scanned (no text layer) and this model cannot see images; no vision model is available to read it. Say so plainly.]`);
                   note("scanned, and nothing could read it");
                 }
-              } else if (text.textPages === 0) {
-                blocks.push(`[The PDF "${name}" (${text.pages} pages) has no text layer and its pages could not be drawn. Say so plainly.]`);
+              } else if (!read.shown.length) {
+                blocks.push(`[The PDF "${name}" (${total} pages) has no text layer and its pages could not be drawn. Say so plainly.]`);
                 note("no text layer");
               }
             }
           } finally {
-            doc.destroy?.();
+            reader.destroy();
           }
         }
       } else if (kind === "audio") {
@@ -5323,6 +5966,78 @@ ${args.text}` : args.text;
   return { content, parts: outParts, notes };
 }
 
+// src/harness/continuation.ts
+var SHORT_ANSWER = 700;
+var ASKS_TO_CONTINUE = [
+  /\b(shall|should|can|may|do) i\s+(now\s+)?(continue|go on|proceed|keep going|carry on|send|give|provide|write)\b/i,
+  /\b(do you want|would you like|want|do you need|are you ready for)( me)?( to)?\s+(me\s+)?(to\s+)?(continue|go on|proceed|keep going|carry on|send|give|provide|the next (part|section|one))\b/i,
+  /\b(say|type|reply|tell me|send|write|answer|respond)\s+(with\s+)?["'“‘«]?(continue|go on|next|more|yes)\b/i,
+  /\bto be continued\b/i,
+  /\b(in|with) (the )?next (message|part|reply|response|one)\b/i,
+  /\bI('| wi)ll (send|give|provide|post|write|share|add) (you )?the (rest|remaining|next|following)\b/i,
+  /\b(the )?rest (of it )?(follows|is coming|comes) (in|next)\b/i,
+  /(ادامه\s*(را\s*)?(بدهم|دهم|می‌?دهم|خواهم\s*داد|می‌?نویسم|را\s*ارسال|را\s*می‌?فرستم)|بگویید\s*[«"]?ادامه|بنویسید\s*[«"]?ادامه|[«"]ادامه[»"]\s*(بنویسید|بگویید|بفرستید)|در\s*پیام\s*(بعدی|بعد)|پیام\s*بعدی|ادامه\s*مطلب|ادامه\s*در\s*)/,
+  /(بخش|قسمت|مرحله)\s*(بعدی|بعد|دوم|سوم|چهارم)\s*(را|رو)?\s*(می‌?(نویسم|فرستم|دهم)|ارسال|ارائه)/
+];
+var PART_MARKER = /(\bpart|\bsection|\bchunk|بخش|قسمت)\s*\d+\s*(of|\/|از)\s*\d+\s*[).\]»]?\s*$|[(\[]\s*\d+\s*\/\s*\d+\s*[)\]]\s*$/i;
+var ANNOUNCE_EN = /\b(let me|let's|let us|i('| wi)ll|i shall|i am going to|i'm going to|going to|now,? i('| wi)ll|next,? i('| wi)ll|first,? i('| wi)ll|then,? i('| wi)ll)\s+(now\s+|first\s+|next\s+|begin\s+by\s+|start\s+by\s+|start\s+with\s+|proceed\s+(to|with)\s+)?(read|write|provide|prepare|create|produce|generate|fetch|go through|go on|compile|output|give|show|present|list|summari[sz]e|translate|extract|rewrite|complete|continue|begin|start|proceed|look|check|search|open|run|call|use|deliver|send|break|split|cover|do|take|work|go)\b/i;
+var ANNOUNCE_FA = /(ابتدا|اول|سپس|بعد|در\s*ادامه|حالا|اکنون|الان|ادامه)[^.؟!?\n]{0,200}?(می‌?(کنم|دهم|نویسم|پردازم|خوانم|گیرم|آورم|سازم|فرستم|دهیم|کنیم|پردازیم)|خواهم\s*(کرد|داد|نوشت|پرداخت|فرستاد)|آماده\s*می‌?کنم|ارائه\s*می‌?دهم|را\s*می‌?نویسم)\s*[.:؛…]*$/;
+var SEQUENCE = /\b(first|next|then|now|one by one|step by step|in (several |a few |multiple )?(parts|pieces|chunks|sections|steps|batches)|part \d|section \d|step \d|the (middle|first|second|third|next|remaining|rest|other))\b|(ابتدا|اول|سپس|ادامه|حالا|اکنون|الان|بخش|قسمت|مرحله|تکتک|یکی\s*یکی|میانی|باقی)/i;
+var LET_ME_KNOW = /\b(let me know|let us know|feel free|happy to help|hope this helps)\b/i;
+var FA_CLOSING = /(اگر\s*(سؤال|سوال|نیاز)|در\s*صورت\s*نیاز|خوشحال\s*می‌?شوم)/;
+var DANGLING_END = /(?<![\p{L}\p{N}])(and|or|but|the|a|an|of|to|in|for|with|that|which|as|by|at|from|is|are|was|were|be|will|would|can|could|should|than|then|so|if|because|when|while|که|و|یا|با|از|در|به|را|تا|اما|ولی|زیرا|چون|اگر|هر|این|آن|یک)\s*$/iu;
+function lastParagraph(text) {
+  const paragraphs = text.trimEnd().split(/\n\s*\n/);
+  return (paragraphs[paragraphs.length - 1] ?? "").trim();
+}
+function openFence(text) {
+  const fences = text.match(/^[ \t]*(```|~~~)/gm);
+  return !!fences && fences.length % 2 === 1;
+}
+function assessAnswer(text, opts = {}) {
+  const trimmed = text.trimEnd();
+  if (trimmed.length < 3) return null;
+  if (openFence(trimmed)) return { reason: "open-fence", joiner: "", label: "the answer stopped inside a block of code" };
+  const tail = lastParagraph(trimmed).slice(-500);
+  const closing = LET_ME_KNOW.test(tail) || FA_CLOSING.test(tail);
+  for (const pattern of ASKS_TO_CONTINUE) {
+    if (pattern.test(tail)) return { reason: "asks-to-continue", joiner: "\n\n", label: "the model asked whether to go on" };
+  }
+  if (PART_MARKER.test(trimmed.slice(-120))) return { reason: "part-marker", joiner: "\n\n", label: "the model sent one part of several" };
+  if (/[:：]\s*$/.test(trimmed) && !closing) return { reason: "colon", joiner: "\n\n", label: "the answer ends where its content should begin" };
+  if (!closing) {
+    const finalSentence = lastSentence(tail);
+    const announces = ANNOUNCE_EN.test(finalSentence) || ANNOUNCE_FA.test(finalSentence);
+    const sequenced = !!opts.midWork || SEQUENCE.test(finalSentence) || /[:：…]\s*$|\.\.\.\s*$/.test(trimmed);
+    if (announces && sequenced && (trimmed.length <= SHORT_ANSWER || finalSentence.length >= tail.length * 0.4 || !!opts.midWork)) {
+      return { reason: "announced", joiner: "\n\n", label: "the model announced the next step and stopped" };
+    }
+  }
+  if (opts.hitOutputLimit) return { reason: "cut-off", joiner: "", label: "the answer used the whole output limit" };
+  if (DANGLING_END.test(trimmed) && !/[.!?؟…。」»)\]}"'`]\s*$/.test(trimmed)) return { reason: "cut-off", joiner: "", label: "the answer stops in the middle of a sentence" };
+  return null;
+}
+function lastSentence(paragraph) {
+  const parts = paragraph.split(/(?<=[.!?؟…])\s+|\n/).map((s) => s.trim()).filter(Boolean);
+  return parts[parts.length - 1] ?? paragraph;
+}
+function continuationPrompt(reason) {
+  switch (reason) {
+    case "cut-off":
+    case "open-fence":
+      return "Continue exactly where you stopped. Do not repeat anything and do not start over.";
+    case "asks-to-continue":
+    case "part-marker":
+      return "Yes, go on. Write the next part now, in full, in this reply. Do not ask whether to continue and do not announce what comes next: just write it. If everything that was asked for is already done, say so in one short sentence and stop.";
+    case "colon":
+    case "announced":
+      return "Do it now, in this reply: carry out what you just said you would do, and give the result in full. Do not announce it again. If everything that was asked for is already done, say so in one short sentence and stop.";
+  }
+}
+function addedLittle(text) {
+  return text.trim().length < 80;
+}
+
 // src/orchestrator.ts
 var ACCESS_PROTOCOL = [
   "Access protocol:",
@@ -5332,9 +6047,13 @@ var ACCESS_PROTOCOL = [
   "- After approval, continue the same run and call the relevant read/list/search tool.",
   "- A denied request is not a failed session; continue within the available context."
 ].join("\n");
-var MAX_CONTINUATIONS = 8;
-var MAX_ATTEMPTS_TRANSIENT = 5;
+var MAX_CONTINUATIONS = 12;
+var MAX_KEEP_GOING = 4;
+var MAX_THINK_NUDGES = 2;
+var PARTIAL_KEPT = 60;
+var MAX_ATTEMPTS_TRANSIENT = 8;
 var MAX_NEGOTIATIONS = 6;
+var RESUMABLE = /* @__PURE__ */ new Set(["rate_limit", "overloaded", "server", "network", "timeout", "refused"]);
 var MAX_NUDGES = 2;
 var REPEAT_WARN = 3;
 var REPEAT_STOP = 6;
@@ -5447,6 +6166,45 @@ ${ACCESS_PROTOCOL}`;
   }
   // ── a run ───────────────────────────────────────────────────────────────
   async run(userInput, cb, parts = []) {
+    await this.execute(cb, async (ctx) => {
+      for (const part of parts) {
+        if (!part.data) continue;
+        const name = part.name ?? "attachment";
+        if (classifyAttachment(name, mimeFor(name, part.mimeType ?? "")) === "pdf") this.toolRegistry.pdf.addAttachment(name, base64ToBytes(part.data));
+      }
+      let prepared = { content: userInput, parts, notes: [] };
+      if (parts.length) {
+        prepared = await prepareUserTurn({
+          text: userInput,
+          parts,
+          profile: ctx.profile,
+          app: this.app,
+          settings: this.settings,
+          log: this.services.log,
+          notice: (text) => cb.onNotice?.({ kind: "info", text }),
+          describe: (messages, signal) => this.describeWithHelper(ctx.provider, messages, signal),
+          signal: ctx.signal,
+          contextBudget: Math.floor(ctx.profile.contextWindow * 0.4)
+        });
+      }
+      ctx.conversation.push({ role: "user", content: prepared.content, parts: prepared.parts });
+    });
+  }
+  /** Picks the work up again from where it was left: after an error, or a stop. */
+  async resume(cb) {
+    await this.execute(cb, async (ctx) => {
+      const last = ctx.conversation[ctx.conversation.length - 1];
+      const waiting = last.role === "user" && typeof last.metadata?.kind !== "string";
+      if (!waiting) {
+        ctx.conversation.push({
+          role: "user",
+          content: "Carry on from where you were interrupted and finish what the user asked for. Do not start over and do not repeat what you already did.",
+          metadata: { kind: "continue", joiner: "\n\n" }
+        });
+      }
+    });
+  }
+  async execute(cb, prepare) {
     const provider = getActiveProvider(this.settings);
     if (!provider || !provider.apiKey) {
       cb.onError(
@@ -5478,29 +6236,19 @@ ${ACCESS_PROTOCOL}`;
       signal: controller.signal,
       cb
     };
+    this.toolRegistry.setPdfCapabilities({
+      vision: profile.vision,
+      maxChars: Math.max(3e3, Math.min(24e3, toolOutputTokenBudget(profile.contextWindow) * 3 - 800)),
+      describe: (images, name) => this.describePdfPages(provider, images, name, controller.signal)
+    });
     try {
-      let prepared = { content: userInput, parts, notes: [] };
-      if (parts.length) {
-        prepared = await prepareUserTurn({
-          text: userInput,
-          parts,
-          profile,
-          app: this.app,
-          settings: this.settings,
-          log: this.services.log,
-          notice: (text) => cb.onNotice?.({ kind: "info", text }),
-          describe: (messages, signal) => this.describeWithHelper(provider, messages, signal),
-          signal: controller.signal,
-          contextBudget: Math.floor(profile.contextWindow * 0.4)
-        });
-      }
-      ctx.conversation.push({ role: "user", content: prepared.content, parts: prepared.parts });
-      await this.loop(ctx);
+      await prepare(ctx);
+      if (ctx.conversation.length > 1) await this.loop(ctx);
     } catch (e) {
       if (!(e instanceof AbortedError) && e?.name !== "AbortError") {
         const c = classifyError(e);
         this.services.log.add("error", `${c.kind}: ${c.message.slice(0, 300)}`);
-        cb.onError(explainError(c, provider.name));
+        cb.onError(explainError(c, provider.name), { resumable: RESUMABLE.has(c.kind) && ctx.conversation.length > 1 });
       }
       this.commit(ctx);
     } finally {
@@ -5525,7 +6273,8 @@ ${ACCESS_PROTOCOL}`;
       }
       const prev = out[out.length - 1];
       if (m.role === "assistant" && !m.tool_calls?.length && prev && prev.role === "assistant" && !prev.tool_calls?.length && messages[i - 1]?.metadata?.kind === "continue") {
-        out[out.length - 1] = { ...prev, content: `${prev.content}${m.content}` };
+        const joiner = typeof messages[i - 1].metadata?.joiner === "string" ? messages[i - 1].metadata.joiner : "";
+        out[out.length - 1] = { ...prev, content: `${prev.content}${joiner}${m.content}` };
         continue;
       }
       out.push({ ...m });
@@ -5560,7 +6309,8 @@ ${ACCESS_PROTOCOL}`;
   // ── the loop ────────────────────────────────────────────────────────────
   async loop(ctx) {
     const { cb } = ctx;
-    const state = { continuations: 0, nudges: 0, malformed: 0, lastSig: "", repeat: 0, sawToolResult: false };
+    const state = { continuations: 0, nudges: 0, malformed: 0, lastSig: "", repeat: 0, sawToolResult: false, keepGoing: 0, thinkNudges: 0, afterKeepGoing: false };
+    const keepGoingOn = this.settings.autoContinue !== false;
     while (!ctx.signal.aborted) {
       const san = sanitizeConversation(ctx.conversation, { stripStaleAccessNotes: true });
       if (!reportIsClean(san.report)) {
@@ -5589,10 +6339,30 @@ ${ACCESS_PROTOCOL}`;
         turn.guard.release();
       }
       if (turn.usage) this.recordUsage(ctx, turn.usage);
+      if (ctx.finalOnly) {
+        let answer = text;
+        if (!answer.trim()) {
+          answer = "(The model kept making the same tool call and wrote no answer. Rephrase the request, or pick another model.)";
+          cb.onAssistantToken(answer);
+        }
+        ctx.conversation.push({ role: "assistant", content: answer, reasoning: turn.reasoning || void 0 });
+        this.commit(ctx);
+        this.emitContext(ctx);
+        return;
+      }
       if (calls.length === 0) {
-        if (finish.reason === "length") {
+        const afterKeepGoing = state.afterKeepGoing;
+        state.afterKeepGoing = false;
+        const usedAll = !!turn.usage && turn.maxOutput > 0 && turn.usage.outputTokens >= turn.maxOutput * 0.97 && !!text.trim();
+        if (finish.reason === "length" || usedAll && (finish.reason === "stop" || finish.reason === "other")) {
           const spentThinking = !text.trim();
           if (spentThinking) {
+            if (keepGoingOn && state.thinkNudges < MAX_THINK_NUDGES) {
+              state.thinkNudges++;
+              this.notice(ctx, "info", "The model spent its whole output limit thinking; asking it to think less and answer.", "output-cut");
+              ctx.conversation.push({ role: "user", content: "You used the whole output limit on thinking and wrote no answer. Think much more briefly this time and write the answer now.", metadata: { kind: "nudge" } });
+              continue;
+            }
             this.notice(ctx, "warning", "The model used its whole output limit before writing an answer (thinking can use all of it). Ask for something shorter, or lower its reasoning effort in the model settings.", "output-cut");
             ctx.conversation.push({ role: "assistant", content: text, reasoning: turn.reasoning || void 0 });
             this.commit(ctx);
@@ -5601,10 +6371,13 @@ ${ACCESS_PROTOCOL}`;
           ctx.conversation.push({ role: "assistant", content: text, reasoning: turn.reasoning || void 0 });
           if (state.continuations < MAX_CONTINUATIONS) {
             state.continuations++;
-            this.notice(ctx, "info", "The answer reached the model's output limit; asking it to go on\u2026", "continued");
-            ctx.conversation.push({ role: "user", content: "Continue exactly where you stopped. Do not repeat anything and do not start over.", metadata: { kind: "continue" } });
+            if (!turn.interrupted) {
+              this.notice(ctx, "info", finish.reason === "length" ? "The answer reached the model's output limit; asking it to go on\u2026" : "The answer used the whole output limit; asking the model to go on\u2026", "continued");
+            }
+            ctx.conversation.push({ role: "user", content: continuationPrompt("cut-off"), metadata: { kind: "continue" } });
             continue;
           }
+          this.notice(ctx, "warning", `The answer was still going after ${MAX_CONTINUATIONS} pieces; it stops here. Ask for the rest.`, "continued");
           this.commit(ctx);
           return;
         }
@@ -5621,10 +6394,14 @@ ${ACCESS_PROTOCOL}`;
           continue;
         }
         if (!text.trim()) {
-          if (state.sawToolResult && state.nudges < MAX_NUDGES) {
+          if (state.nudges < MAX_NUDGES) {
             state.nudges++;
-            this.services.log.add("empty", "The model answered with nothing after tool results; asking it to continue.");
-            ctx.conversation.push({ role: "user", content: "Continue: use the tool results above to answer the user's request now.", metadata: { kind: "nudge" } });
+            this.services.log.add("empty", "The model answered with nothing; asking it to continue.");
+            ctx.conversation.push({
+              role: "user",
+              content: state.sawToolResult ? "Continue: use the tool results above to answer the user's request now." : "Your last reply was empty. Answer the user's request now.",
+              metadata: { kind: "nudge" }
+            });
             continue;
           }
           this.services.log.add("empty", "The model returned an empty answer.");
@@ -5634,6 +6411,18 @@ ${ACCESS_PROTOCOL}`;
           this.commit(ctx);
           return;
         }
+        if (keepGoingOn && state.keepGoing < MAX_KEEP_GOING && !(afterKeepGoing && addedLittle(text))) {
+          const unfinished = assessAnswer(text, { midWork: state.sawToolResult });
+          if (unfinished) {
+            state.keepGoing++;
+            state.afterKeepGoing = true;
+            this.notice(ctx, "info", `Going on by itself: ${unfinished.label}.`, "keep-going");
+            ctx.conversation.push({ role: "assistant", content: text, reasoning: turn.reasoning || void 0 });
+            ctx.conversation.push({ role: "user", content: continuationPrompt(unfinished.reason), metadata: { kind: "continue", joiner: unfinished.joiner } });
+            if (unfinished.joiner) cb.onAssistantToken(unfinished.joiner);
+            continue;
+          }
+        }
         ctx.conversation.push({ role: "assistant", content: text, reasoning: turn.reasoning || void 0 });
         this.commit(ctx);
         this.emitContext(ctx);
@@ -5641,6 +6430,8 @@ ${ACCESS_PROTOCOL}`;
       }
       state.continuations = 0;
       state.nudges = 0;
+      state.keepGoing = 0;
+      state.afterKeepGoing = false;
       const outcome = await this.runCalls(ctx, calls, text, turn, finish, state);
       if (outcome === "stop") return;
     }
@@ -5693,6 +6484,23 @@ ${ACCESS_PROTOCOL}`;
       profile
     });
   }
+  /** Pages of a PDF read by a model that can see, for one that cannot: a few at a time, each transcribed under its number. */
+  async describePdfPages(main, images, name, signal) {
+    const described = [];
+    for (let i = 0; i < images.length; i += 4) {
+      const batch = images.slice(i, i + 4);
+      const out = await this.describeWithHelper(
+        main,
+        [
+          { role: "system", content: DESCRIBE_SYSTEM },
+          { role: "user", content: `These are pages ${batch.map((b) => b.page).join(", ")} of the document "${name}". Transcribe each page in order, starting each with [Page N]. Keep tables as tables.`, parts: batch.map((b) => ({ type: "image", data: b.data, mimeType: b.mimeType, name: `${name} page ${b.page}` })) }
+        ],
+        signal
+      );
+      if (out) described.push(out);
+    }
+    return described.length ? described.join("\n\n") : null;
+  }
   /** An image or scanned page described by a model that can see, for one that cannot. */
   async describeWithHelper(main, messages, signal) {
     const setting = this.settings.visionHelperProviderId ?? "";
@@ -5743,6 +6551,12 @@ ${ACCESS_PROTOCOL}`;
       if (c.transient && this.settings.retryTransientErrors !== false && transient < MAX_ATTEMPTS_TRANSIENT) {
         transient++;
         const wait = retryDelayMs(transient, c.retryAfterMs);
+        const partial = turn.result;
+        if (this.settings.autoContinue !== false && partial && !partial.calls.length && partial.text.trim().length >= PARTIAL_KEPT) {
+          this.notice(ctx, "retry", `${explainShort(c)} What it had written is kept; asking it to go on in ${Math.max(1, Math.round(wait / 1e3))}s (${transient}/${MAX_ATTEMPTS_TRANSIENT})\u2026`, "retry");
+          await sleep(wait, ctx.signal);
+          return { ...partial, finish: { reason: "length", raw: "interrupted" }, interrupted: true };
+        }
         if (shown) ctx.cb.onStreamReset?.();
         this.notice(ctx, "retry", `${explainShort(c)} Trying again in ${Math.max(1, Math.round(wait / 1e3))}s (${transient}/${MAX_ATTEMPTS_TRANSIENT})\u2026`, "retry");
         await sleep(wait, ctx.signal);
@@ -5846,7 +6660,7 @@ ${ACCESS_PROTOCOL}`;
       },
       this.settings.textToolCalls !== false && ctx.tools.length > 0
     );
-    const result = { text: "", reasoning: "", calls: [], finish: { reason: "stop" }, shown: false, guard };
+    const result = { text: "", reasoning: "", calls: [], finish: { reason: "stop" }, shown: false, guard, maxOutput };
     let failure = null;
     try {
       await adapter.chat(
@@ -5998,10 +6812,19 @@ ${ACCESS_PROTOCOL}`;
       ctx.conversation.push({ role: "user", content: "Images returned by the tools above:", parts: imageParts, metadata: { kind: "images" } });
     }
     if (guardOn && state.repeat >= REPEAT_STOP) {
-      this.notice(ctx, "warning", "The model kept making the same tool call, so the run was stopped.", "loop-guard");
-      cb.onError("The model kept making the same tool call. I stopped it. Try rephrasing the request, or pick another model.");
-      this.commit(ctx);
-      return "stop";
+      if (ctx.finalOnly || this.settings.autoContinue === false) {
+        this.notice(ctx, "warning", "The model kept making the same tool call, so the run was stopped.", "loop-guard");
+        cb.onError("The model kept making the same tool call. I stopped it. Try rephrasing the request, or pick another model.");
+        this.commit(ctx);
+        return "stop";
+      }
+      this.notice(ctx, "warning", "The model kept making the same tool call; asking it to answer with what it already has.", "loop-guard");
+      ctx.finalOnly = true;
+      ctx.conversation.push({
+        role: "user",
+        content: "You keep making the same tool call and getting the same result. Do not call any more tools. Write your answer to the user now from what you already have, and say plainly what you could not find out.",
+        metadata: { kind: "nudge" }
+      });
     }
     this.emitContext(ctx);
     return "continue";
@@ -8005,6 +8828,22 @@ A safety backup will be created inside .agenter-backups first. Permanent deletio
 \u{1F4CE} ${parts.map((part) => part.name ?? part.type).join(", ")}` : "";
     this.appendMessage("user", `${effectiveText}${attachmentLabel}`);
     this.messages.push({ role: "user", content: effectiveText, parts });
+    await this.startRun({ text: effectiveText, parts });
+  }
+  /** Picks the last run up again after an error that was only the connection: no new message, the work goes on. */
+  async resume() {
+    if (this.busy || !this.messages.length) return;
+    try {
+      await this.plugin.ensureCloudflareAccessToken();
+    } catch (error) {
+      new import_obsidian7.Notice(error?.message ?? String(error));
+      return;
+    }
+    this.autoFollow = true;
+    await this.startRun({ text: "", parts: [], resume: true });
+  }
+  async startRun(opts) {
+    const { text: effectiveText, parts, resume = false } = opts;
     this.busy = true;
     this.aborted = false;
     this.sendBtn.disabled = true;
@@ -8019,7 +8858,7 @@ A safety backup will be created inside .agenter-backups first. Permanent deletio
 
 ${effectiveText}` : effectiveText;
     this.orchestrator.setAccessScope(accessScope);
-    this.orchestrator.setMessages(this.messages.slice(0, -1));
+    this.orchestrator.setMessages(resume ? this.messages : this.messages.slice(0, -1));
     this.orchestrator.shouldAbort = () => this.aborted;
     this.streamBuf = "";
     this.streamEl = null;
@@ -8130,7 +8969,7 @@ ${effectiveText}` : effectiveText;
         this.advanceActivity(`approval-${call.name}`, `Waiting for ${TOOL_LABELS[call.name]?.verb ?? call.name} approval`, "Review the action card below");
         return this.requestApproval(call);
       },
-      onError: (err) => {
+      onError: (err, info) => {
         finishReasoning();
         this.collapseToolLine(activeToolLine);
         activeToolLine = null;
@@ -8138,7 +8977,8 @@ ${effectiveText}` : effectiveText;
         this.hadError = true;
         this.advanceActivity("error", "The run encountered an error", err);
         this.setStatus("error", "Request failed");
-        this.appendSystem(`**Error:** ${err}`);
+        const row = this.appendSystem(`**Error:** ${err}`);
+        if (info?.resumable) this.addResumeButton(row);
       },
       onDone: () => {
         finishReasoning();
@@ -8153,9 +8993,24 @@ ${effectiveText}` : effectiveText;
         void this.persist();
       }
     };
-    await this.orchestrator.run(prompt, cb, parts);
+    if (resume) await this.orchestrator.resume(cb);
+    else await this.orchestrator.run(prompt, cb, parts);
     if (this.orchestrator.messages.length) this.messages = this.orchestrator.messages;
     this.refreshContextMeter();
+  }
+  /** After an error that was only the connection or the provider's load: one click picks the work up where it stopped. */
+  addResumeButton(after) {
+    const holder = document.createElement("div");
+    holder.addClass("agenter-resume-row");
+    const btn = holder.createEl("button", { text: "Continue where it stopped", attr: { type: "button" } });
+    btn.addClass("agenter-resume");
+    btn.addEventListener("click", () => {
+      btn.disabled = true;
+      holder.remove();
+      void this.resume();
+    });
+    after.after(holder);
+    this.scrollToBottom();
   }
   syncMessages() {
     const msgs = [];
@@ -8193,7 +9048,8 @@ ${effectiveText}` : effectiveText;
     if (access.mode === "none") return "[Initial context access: none. If the user asks for access or vault content is needed, call request_access. Never claim that access cannot be requested; continue this same run after approval.]";
     if (access.mode === "note") {
       if (!access.notePath) return "[Context access: none. No active note is available.]";
-      return `[Initial context access: ONLY note "${access.notePath}". If the user asks for access, or the task needs another note, folder, or the whole vault, call request_access with the smallest sufficient scope. Never say you cannot request access. After approval, continue this same run.]`;
+      const pdf = /\.pdf$/i.test(access.notePath) ? ` This file is a PDF: read it with read_pdf (path "${access.notePath}").` : "";
+      return `[Initial context access: ONLY note "${access.notePath}".${pdf} If the user asks for access, or the task needs another note, folder, or the whole vault, call request_access with the smallest sufficient scope. Never say you cannot request access. After approval, continue this same run.]`;
     }
     if (access.mode === "folder") {
       return `[Initial context access: ONLY folder "${access.folderPath ?? ""}" and its children. If more access is needed, call request_access with the smallest sufficient scope and continue this same run after approval.]`;

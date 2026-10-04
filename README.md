@@ -105,9 +105,15 @@ vault.</sub>
   or read from text, temporary errors retried, loops stopped — so models that
   were fragile elsewhere keep working. See
   [the harness](#the-context-window-and-the-harness).
+- **Goes on by itself:** a model that stops in the middle of the job — after
+  announcing the next step, writing "part 1 of 3", asking whether to go on, or
+  when the connection drops mid-answer — is told to carry on, so you do not
+  have to type "continue". See [Going on by itself](#going-on-by-itself).
 - **Images, PDFs, Office files and text as attachments**, with a fallback for
   models that cannot see: they get the text, or a description made by another
-  provider, or an honest note. See [Attachments](#attachments).
+  provider, or an honest note. PDFs are laid out again from pdf.js's pieces
+  (Persian and other right-to-left text included) and long ones are read page by
+  page, on request. See [Attachments](#attachments).
 - **Everything can be copied:** messages are selectable, each has a copy
   button and a right-click menu, and the whole conversation copies as Markdown.
 
@@ -235,7 +241,8 @@ model — its window, its largest answer, what it refuses — and works from it:
 | A model writes a tool call as text (Hermes, Mistral, fenced JSON, `<function=…>`) | Reads it and runs it; the text never reaches the screen. |
 | Broken JSON in tool arguments | Repairs what can be repaired; otherwise tells the model what was wrong and asks again. |
 | A model refuses native tools | Falls back to describing the tools in the prompt. |
-| Empty answers, repeated calls | Nudges the model once, warns at three identical calls, stops at six. |
+| Empty answers, repeated calls | Asks the model twice to answer; warns at three identical calls and, at six, asks it to answer with what it already has. |
+| The model stops in the middle of the job | Tells it to go on: see [Going on by itself](#going-on-by-itself). |
 | Odd histories | Pairs every tool call with a result, makes ids unique, drops empty turns and keeps the first turn a user turn — the things stricter APIs reject. |
 | Provider quirks | Anthropic and Gemini message shapes, thinking-model round-trips (`reasoning_content`, `thoughtSignature`), Gemini schema dialect, Ollama's native API with a real `num_ctx`. |
 
@@ -249,6 +256,25 @@ popover, or the command palette) copies what Agenter did and what it knows about
 the model — retries, repairs, compactions, learned limits — to paste into an
 issue.
 
+### Going on by itself
+
+Models stop early for different reasons, and the harness handles each one
+instead of waiting for you to type "continue":
+
+| What happened | What Agenter does |
+| --- | --- |
+| The answer reached the model's output limit — including a stop that used every token it was allowed while calling itself "stop" | Asks the model to go on from the exact word it stopped at, up to 12 pieces, and joins them into one message. |
+| The connection dropped in the middle of an answer | Keeps what had arrived and asks the model to go on from there, instead of writing it all again. |
+| The model announced the next step and stopped ("first I will write the middle sections:"), wrote "part 1 of 3", or asked "shall I continue?" | Tells it to do it now, in the same reply (up to four times in a row; once a continuation adds almost nothing, it stops). A model that is asking something it needs answered is left alone. |
+| A thinking model spent its whole output limit thinking | Asks it to think more briefly and answer. |
+| The model made the same tool call six times | Asks it to answer with what it already has, instead of ending in an error. |
+| The provider kept refusing, or the connection kept dropping | Waits and retries up to eight times, then shows **Continue where it stopped**: one click picks the work up from where it was, with no new message. |
+
+Each of these shows one quiet line in the chat. **Settings → Agenter → Chat →
+Keep going until the work is done** turns off the announcement, dropped-connection,
+thinking and repeated-call rows; continuing a cut answer, the retries and the
+**Continue** button stay.
+
 ## Attachments
 
 The paperclip in the composer (or dropping or pasting a file onto it) adds
@@ -258,10 +284,35 @@ up to 32 MB each. Each one gets a chip that says what the model will receive:
 | File | A model that can see | A model that cannot |
 | --- | --- | --- |
 | Image | Sent as a picture, downscaled when it is large. | Described by a *vision helper* provider, which also reads out any text in it; otherwise the model is told, plainly, that it cannot see the image. |
-| PDF | Sent as a PDF where the provider reads them natively; otherwise its text is extracted with Obsidian's own PDF engine. Scanned pages are drawn and shown. | Its text; for scanned pages, the helper's description of them. |
+| PDF | Sent as a PDF where the provider reads them natively; otherwise its text is read with Obsidian's own PDF engine and laid out again (see below). Scanned pages are drawn and shown. | Its text; for scanned pages, the helper's description of them. |
 | Word, PowerPoint, Excel | Their text, slides and sheets read from the file. | The same. |
 | Text and code | Included as text. | The same. |
 | Audio | Sent to providers that listen (Gemini). | Transcribed by the helper when it can; otherwise the model is told that it was attached. |
+
+#### How a PDF is read
+
+pdf.js does not return text but a pile of small pieces with positions, and in
+real files the pile is not text yet: a Persian word arrives as separate glyphs
+in presentation forms, in the order they are drawn from left to right; "fl" is
+a piece of its own; a table row is a few pieces on one baseline. Agenter puts
+the page back together — lines from the positions, each line back into reading
+order with its right-to-left and left-to-right runs, glyphs normalised to the
+letters they stand for, mirrored brackets restored, wide gaps kept as columns —
+so that "گزارش فصلی" arrives as "گزارش فصلی" and not as single letters in the wrong
+order. A page whose text is mostly private-use or replacement characters (a font
+without a map) is treated as a scan.
+
+A PDF too long for the window is not simply cut. The model gets as many whole
+pages as fit, is told which are missing, and has two tools for the rest:
+
+| Tool | What it does |
+| --- | --- |
+| `read_pdf` | For a PDF attached to the chat (kept in memory for as long as the chat is open) or one in the vault, by `path`. With nothing else: the page count, the title and the first words of each page (a short PDF comes back whole). With `pages` ("1-5", "3,7"): those pages as text. With `query`: which pages mention it, with a snippet — Arabic and Persian letter variants and digits match each other. With `view` and `pages`: the pages as pictures, for figures, charts and tables. |
+| `find_pdfs` | Lists the PDFs in the vault by folder or name. |
+
+If the file open in Obsidian is a PDF, `current_note` says so and points to
+`read_pdf`. Vault paths follow the same scope as notes (a PDF outside the chosen
+note, folder or vault asks for access first); an attached PDF needs none.
 
 The helper is chosen in **Settings → Agenter → Chat → Describe images for models
 that cannot see**: *Automatic* picks the first provider you configured that can
@@ -385,10 +436,16 @@ text) and against the real UI code:
 | `test/harness-core.mjs` | Token estimates, model profiles, error classification, repair, sanitizing, compaction |
 | `test/harness-providers.mjs` | The request each provider is sent and how its stream is read |
 | `test/harness-attachments.mjs` | Classifying and reading files, and what each model kind is given |
-| `test/harness-loop.mjs` | The whole agent loop, end to end, against scripted servers |
+| `test/harness-pdf.mjs` | Laying a PDF page out again (from pdf.js output captured from real PDFs, in `test/fixtures/`), page ranges, `read_pdf`, scope |
+| `test/harness-loop.mjs` | The whole agent loop, end to end, against scripted servers: retries, compaction, going on by itself, PDFs |
 | `test/harness-ui.mjs` | The context bar, notices, copy, the menu, attachment chips |
 
 The distributable files are `main.js`, `manifest.json`, and `styles.css`.
+
+`node test/pdf-real.mjs` is an optional check against real PDFs: Chromium prints
+English, Persian, mixed-script and raster-only pages to PDF and real pdf.js reads
+them back (`npm i --no-save playwright pdfjs-dist@4`; it skips itself when they
+are missing).
 
 ### Previews
 

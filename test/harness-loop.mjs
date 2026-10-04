@@ -1,6 +1,7 @@
 // The whole loop: the orchestrator against a local OpenAI-style server that misbehaves on cue. Each scenario is one
 // way a model or a provider goes wrong, and what the harness does about it.
 import { createServer } from "http";
+import { readFileSync } from "fs";
 import { load, eq, ok, count } from "./harness-helpers.mjs";
 
 const { AgentOrchestrator, DEFAULT_SETTINGS, createHarnessServices } = await load("test/harness-loop-entry.ts");
@@ -186,11 +187,11 @@ const lastUserOf = (req) => req.messages.filter((m) => m.role === "user").at(-1)
 {
   const s = scripted(); const url = await s.ready;
   s.queue.push(s.call([{ name: "write_note", args: '{"path": "n.md", "content": "a very long note that never fini' }], { finish: "length" }));
-  s.queue.push(s.say("I will write less."));
+  s.queue.push(s.say("Understood, the note stays short."));
   const { orchestrator } = setup(s.server, url);
   const ev = await run(orchestrator, "write", []);
   ok(/cut off and not run/.test(ev.results[0]), "the model is told its call was cut off");
-  eq(ev.text, "I will write less.", "and it carries on");
+  eq(ev.text, "Understood, the note stays short.", "and it carries on");
   s.server.close();
 }
 
@@ -403,23 +404,47 @@ const lastUserOf = (req) => req.messages.filter((m) => m.role === "user").at(-1)
 
   const t = scripted(); const turl = await t.ready;
   t.queue.push(t.say(""));
+  t.queue.push(t.say(""));
+  t.queue.push(t.say(""));
   const o2 = setup(t.server, turl);
   const ev2 = await run(o2.orchestrator, "hi");
   ok(/empty answer/.test(ev2.text), "a model that says nothing is not shown as a blank");
+  eq(t.requests.length, 3, "after being asked twice to answer");
+  ok(/Your last reply was empty/.test(lastUserOf(t.requests[1]).content), "the first ask does not need tool results to make sense");
   t.server.close();
 }
 
-// 13. A model that repeats the same call is warned, then stopped.
+// 13. A model that repeats the same call is warned, then asked to answer with what it has.
 {
   const s = scripted(); const url = await s.ready;
-  for (let i = 0; i < 8; i++) s.queue.push(s.call([{ name: "read_note", args: { path: "a.md" } }]));
+  for (let i = 0; i < 6; i++) s.queue.push(s.call([{ name: "read_note", args: { path: "a.md" } }]));
+  s.queue.push(s.say("All I could find is: alpha note."));
   const { orchestrator, services } = setup(s.server, url);
   const ev = await run(orchestrator, "read a forever");
   ok(ev.results.some((r) => /made 3 times in a row/.test(r)), "the third repeat carries a warning");
-  ok(ev.errors.some((e) => /same tool call/.test(e)), "the sixth stops the run");
-  eq(s.requests.length, 6, "no more requests are made");
+  eq(ev.errors, [], "the sixth is not an error");
+  eq(s.requests.length, 7, "it gets one more request");
+  ok(/Do not call any more tools/.test(lastUserOf(s.requests[6]).content), "in which it is told to answer from what it has");
+  eq(ev.text, "All I could find is: alpha note.", "and that is the answer");
   ok(services.log.all().some((e) => e.kind === "loop-guard"), "it is logged");
   s.server.close();
+
+  // And if it still insists, what it writes is used and the calls are not run.
+  const t = scripted(); const turl = await t.ready;
+  for (let i = 0; i < 6; i++) t.queue.push(t.call([{ name: "read_note", args: { path: "a.md" } }]));
+  t.queue.push(t.call([{ name: "read_note", args: { path: "a.md" } }], { text: "I give up; the note says alpha." }));
+  const o2 = setup(t.server, turl);
+  const ev2 = await run(o2.orchestrator, "read a forever");
+  eq([ev2.text, ev2.errors, ev2.tools.length], ["I give up; the note says alpha.", [], 6], "a seventh call is not run, and its text is the answer");
+  t.server.close();
+
+  // With the setting off the old behaviour stays: an error.
+  const u = scripted(); const uurl = await u.ready;
+  for (let i = 0; i < 8; i++) u.queue.push(u.call([{ name: "read_note", args: { path: "a.md" } }]));
+  const o3 = setup(u.server, uurl, undefined, { settings: { autoContinue: false } });
+  const ev3 = await run(o3.orchestrator, "read a forever");
+  ok(ev3.errors.some((e) => /same tool call/.test(e)), "with going on by itself off, the sixth stops the run");
+  u.server.close();
 }
 
 // 14. Output of a tool is cut to the window, and images go to a model that can see.
@@ -522,6 +547,205 @@ const lastUserOf = (req) => req.messages.filter((m) => m.role === "user").at(-1)
   await run(o3.orchestrator, "hi");
   eq(u.requests[0].max_tokens, 64000, "left alone, a model that is known writes as much as it can");
   u.server.close();
+}
+
+// 18. A model that stops after announcing the next step is told to go on.
+{
+  const s = scripted(); const url = await s.ready;
+  s.queue.push(s.say("I'll deliver it in parts so nothing is lost. First I will write the opening sections."));
+  s.queue.push(s.say("Opening: the report begins with the 2025 results and the plan for the year ahead, in full detail."));
+  const { orchestrator, services } = setup(s.server, url);
+  const ev = await run(orchestrator, "give me the complete text");
+  eq(s.requests.length, 2, "a second request is made without anyone typing");
+  ok(/Do it now, in this reply/.test(lastUserOf(s.requests[1]).content), "it says to do what was announced");
+  ok(ev.text.startsWith("I'll deliver it in parts") && ev.text.includes("\n\nOpening: the report"), "and the screen reads as one answer, the two pieces apart");
+  ok(ev.notices.some((n) => n.kind === "info" && /Going on by itself/.test(n.text)), "the person is told");
+  eq(orchestrator.messages.map((m) => m.role), ["user", "assistant"], "the history keeps one answer, without the nudge");
+  ok(orchestrator.messages[1].content.includes("Opening: the report"), "…with both pieces in it");
+  ok(services.log.all().some((e) => e.kind === "keep-going"), "it is logged");
+  s.server.close();
+
+  // Asked for permission to go on: yes. And it stops when the model has nothing more to add.
+  const t = scripted(); const turl = await t.ready;
+  t.queue.push(t.say("Section one is above.\n\nShall I continue with section two?"));
+  t.queue.push(t.say("Section two, written out in full with every detail that was asked for, and a short summary after it."));
+  t.queue.push(t.say("Everything is written."));
+  const o2 = setup(t.server, turl);
+  const ev2 = await run(o2.orchestrator, "write the sections");
+  ok(/Yes, go on/.test(lastUserOf(t.requests[1]).content), "a question whether to go on is answered");
+  eq(t.requests.length, 2, "an answer that is complete is the end");
+  t.server.close();
+
+  // A model that keeps asking is not followed forever.
+  const u = scripted(); const uurl = await u.ready;
+  for (let i = 0; i < 8; i++) u.queue.push(u.say(`Part ${i + 1} is written here with enough text to count as a piece of work.\n\nShall I continue?`));
+  const o3 = setup(u.server, uurl);
+  const ev3 = await run(o3.orchestrator, "go");
+  eq(u.requests.length, 5, "after four nudges it is left to ask");
+  eq(ev3.errors, [], "without an error");
+  u.server.close();
+
+  // A continuation that adds almost nothing ends it.
+  const v = scripted(); const vurl = await v.ready;
+  v.queue.push(v.say("It is all there. Shall I continue?"));
+  v.queue.push(v.say("Nothing more. Shall I continue?"));
+  const o4 = setup(v.server, vurl);
+  await run(o4.orchestrator, "go");
+  eq(v.requests.length, 2, "a reply that adds almost nothing is not asked again");
+  v.server.close();
+
+  // Off: it waits to be told.
+  const w = scripted(); const wurl = await w.ready;
+  w.queue.push(w.say("Section one is above.\n\nShall I continue with section two?"));
+  const o5 = setup(w.server, wurl, undefined, { settings: { autoContinue: false } });
+  await run(o5.orchestrator, "write the sections");
+  eq(w.requests.length, 1, "with the setting off, nothing is added");
+  w.server.close();
+
+  // Mid-work: after tools, a bare announcement is the model stopping.
+  const x = scripted(); const xurl = await x.ready;
+  x.queue.push(x.call([{ name: "read_note", args: { path: "a.md" } }]));
+  x.queue.push(x.say("I have read it. Next I will summarize b.md."));
+  x.queue.push(x.call([{ name: "read_note", args: { path: "b.md" } }]));
+  x.queue.push(x.say("Both notes are covered: alpha and beta."));
+  const o6 = setup(x.server, xurl);
+  const ev6 = await run(o6.orchestrator, "summarize both notes");
+  eq([ev6.tools.map((t) => t[0]), x.requests.length], [["read_note", "read_note"], 4], "it goes on to the work it announced");
+  x.server.close();
+}
+
+// 19. A stop that used the whole output limit was cut off, whatever the provider called it.
+{
+  const s = scripted(); const url = await s.ready;
+  s.queue.push(s.say("The report finds that revenue grew in the second half of the year", { usage: { prompt_tokens: 500, completion_tokens: 32768 } }));
+  s.queue.push(s.say(", mostly from the new product."));
+  const { orchestrator } = setup(s.server, url);
+  const ev = await run(orchestrator, "summarize");
+  eq(s.requests.length, 2, "a stop at the very limit is continued");
+  ok(/Continue exactly where you stopped/.test(lastUserOf(s.requests[1]).content), "from where it stopped");
+  eq(orchestrator.messages.at(-1).content, "The report finds that revenue grew in the second half of the year, mostly from the new product.", "and joined without a seam");
+  s.server.close();
+}
+
+// 20. A connection that drops in the middle of an answer does not lose the answer.
+{
+  const s = scripted(); const url = await s.ready;
+  const first = "Chapter one: the early years were spent in the north, where the family kept sheep and grew barley";
+  s.queue.push(s.partialThenDie(first));
+  s.queue.push(s.say(" and rye until the winter of 1912."));
+  const { orchestrator, services } = setup(s.server, url);
+  const ev = await run(orchestrator, "tell me the story");
+  eq(ev.resets, 0, "what had arrived stays on the screen");
+  eq(s.requests.length, 2, "one more request");
+  const again = s.requests[1].messages;
+  eq(again.at(-2), { role: "assistant", content: first }, "which carries the partial answer");
+  ok(/Continue exactly where you stopped/.test(again.at(-1).content), "and asks the model to go on from it");
+  eq(ev.text, first + " and rye until the winter of 1912.", "the screen reads as one answer");
+  eq(orchestrator.messages.at(-1).content, first + " and rye until the winter of 1912.", "so does the history");
+  ok(ev.notices.some((n) => n.kind === "retry" && /kept/.test(n.text)), "the person is told it was kept");
+  s.server.close();
+
+  // Too little to keep: the old behaviour, a fresh request.
+  const t = scripted(); const turl = await t.ready;
+  t.queue.push(t.partialThenDie("Chapter"));
+  t.queue.push(t.say("Chapter one, all of it."));
+  const o2 = setup(t.server, turl);
+  const ev2 = await run(o2.orchestrator, "story");
+  eq([ev2.resets, ev2.text], [1, "Chapter one, all of it."], "a few words are not worth keeping");
+  t.server.close();
+}
+
+// 21. A model that spent its whole output thinking is asked to think less.
+{
+  const s = scripted(); const url = await s.ready;
+  s.queue.push(s.say("", { finish: "length" }));
+  s.queue.push(s.say("The answer is 42."));
+  const { orchestrator } = setup(s.server, url);
+  const ev = await run(orchestrator, "what is the answer");
+  ok(/Think much more briefly/.test(lastUserOf(s.requests[1]).content), "it is asked to think less");
+  eq(ev.text, "The answer is 42.", "and answers");
+  eq(orchestrator.messages.some((m) => m.metadata?.kind === "nudge"), false, "the nudge is not kept");
+  s.server.close();
+}
+
+// 22. After a failure that is about the connection, the work can be picked up again.
+{
+  const s = scripted(); const url = await s.ready;
+  s.queue.push(s.call([{ name: "read_note", args: { path: "a.md" } }]));
+  s.queue.push(s.fail(503, "Service Unavailable"));
+  const { orchestrator } = setup(s.server, url, undefined, { settings: { retryTransientErrors: false } });
+  const infos = [];
+  const events = { text: "", errors: [], tools: [] };
+  const callbacks = () => ({
+    onAssistantToken: (t) => (events.text += t), onToolUse: (n) => events.tools.push(n), onToolResult: () => {},
+    onError: (e, info) => { events.errors.push(e); infos.push(info); }, onDone: () => {},
+  });
+  await orchestrator.run("read a and tell me", callbacks());
+  eq(infos, [{ resumable: true }], "a server error is reported as one the work can resume from");
+  s.queue.push(s.say("The note says alpha."));
+  await orchestrator.resume(callbacks());
+  const last = s.requests.at(-1).messages;
+  ok(/Carry on from where you were interrupted/.test(last.at(-1).content), "resuming tells the model to carry on");
+  eq(last.filter((m) => m.role === "tool").length, 1, "with the work already done still in the history");
+  eq(events.text, "The note says alpha.", "and it finishes");
+  s.server.close();
+
+  // An error that resuming cannot mend is not offered it.
+  const t = scripted(); const turl = await t.ready;
+  t.queue.push(t.fail(401, "Incorrect API key provided"));
+  const o2 = setup(t.server, turl);
+  const infos2 = [];
+  await o2.orchestrator.run("hi", { onAssistantToken() {}, onToolUse() {}, onToolResult() {}, onError: (e, info) => infos2.push(info), onDone() {} });
+  eq(infos2, [{ resumable: false }], "a refused key is not");
+  t.server.close();
+}
+
+// 23. A PDF is read so that a model can understand it: laid out, in pieces, and on request.
+{
+  const fixtures = JSON.parse(readFileSync(new URL("./fixtures/pdf-items.json", import.meta.url), "utf8"));
+  const pages = [fixtures.persian1, fixtures.persian2];
+  globalThis.__pdfjs = {
+    getDocument: () => ({
+      promise: Promise.resolve({
+        numPages: pages.length,
+        getMetadata: async () => ({ info: {} }),
+        getPage: async (n) => ({ getTextContent: async () => ({ items: pages[n - 1] }), getViewport: () => ({ width: 100, height: 100 }), render: () => ({ promise: Promise.resolve() }) }),
+        destroy() {},
+      }),
+    }),
+  };
+  const pdf = Buffer.from("%PDF-1.4\n1 0 obj << /Type /Pages /Count 2 >> endobj\n%%EOF");
+  const part = { type: "pdf", data: pdf.toString("base64"), mimeType: "application/pdf", name: "گزارش.pdf" };
+
+  const s = scripted(); const url = await s.ready;
+  s.queue.push(s.call([{ name: "read_pdf", args: { query: "پیوست" } }]));
+  s.queue.push(s.call([{ name: "read_pdf", args: { pages: "2" } }]));
+  s.queue.push(s.say("The appendix lists the results."));
+  const { orchestrator } = setup(s.server, url);
+  const ev = await run(orchestrator, "what does it say?", [part]);
+  const first = lastUserOf(s.requests[0]).content;
+  ok(first.includes("گزارش فصلی") && first.includes("برنامهٔ سال آینده"), "the model gets the text of a Persian PDF as Persian");
+  ok(!/[\uFB50-\uFDFF\uFE70-\uFEFF]/.test(first), "not as presentation-form glyphs");
+  ok(first.includes("[Page 1]") && first.includes("[Page 2]"), "page by page");
+  ok(s.requests[0].tools.some((t) => t.function.name === "read_pdf"), "and the tool to read more of it is offered");
+  ok(/Page 2: .*پیوست/.test(ev.results[0]), "a search finds the page, by Persian letters");
+  ok(ev.results[1].includes("[Page 2]") && ev.results[1].includes("Acme"), "a page can be read by number later, from the copy kept in memory");
+  eq(ev.text, "The appendix lists the results.", "and the model answers from it");
+  s.server.close();
+
+  // A big one is cut to the window and says how to get the rest.
+  const lorem = (n) => Array.from({ length: 800 }, (_, i) => ({ str: `w${n}x${i}`, transform: [10, 0, 0, 10, 20 + (i % 20) * 24, 700 - Math.floor(i / 20) * 12], width: 20, height: 10, dir: "ltr", hasEOL: false }));
+  const many = Array.from({ length: 30 }, (_, i) => lorem(i + 1));
+  globalThis.__pdfjs = { getDocument: () => ({ promise: Promise.resolve({ numPages: many.length, getMetadata: async () => ({ info: {} }), getPage: async (n) => ({ getTextContent: async () => ({ items: many[n - 1] }) }), destroy() {} }) }) };
+  const t = scripted(); const turl = await t.ready;
+  t.queue.push(t.say("ok"));
+  const o2 = setup(t.server, turl, undefined, { settings: { modelOverrides: { "openai-compatible-default:test-model": { contextWindow: 12000 } } } });
+  await run(o2.orchestrator, "summarize", [{ ...part, name: "big.pdf" }]);
+  const big = lastUserOf(t.requests[0]).content;
+  ok(big.length < 14_000, "a PDF too big for the window is cut to a share of it");
+  ok(/Pages \d+-30 are not included here: read them with the read_pdf tool \(attachment "big\.pdf"/.test(big), "and the model is told which pages are missing and how to ask for them");
+  t.server.close();
+  delete globalThis.__pdfjs;
 }
 
 console.log(`HARNESS_LOOP_OK (${count()} checks)`);

@@ -20,6 +20,7 @@ export type HarnessEventKind =
   | "text-tool-call"
   | "truncated"
   | "continued"
+  | "keep-going"
   | "compact"
   | "sanitize"
   | "loop-guard"

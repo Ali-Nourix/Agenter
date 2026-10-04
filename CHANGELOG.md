@@ -1,5 +1,54 @@
 # Changelog
 
+## 1.9.0 - Going on by itself, and PDFs a model can understand
+
+### A model that stops in the middle of the job is told to go on
+
+- An answer that stopped at the output limit but was reported as a normal stop
+  (a stop that used every token it was allowed) is continued like any other cut
+  answer.
+- A model that stops after announcing the next step ("first I will write the
+  middle sections:"), writing "part 1 of 3", or asking "shall I continue?", in
+  English or Persian, is told to do it now, in the same reply, up to four times
+  in a row; a continuation that adds almost nothing ends it, and a model asking
+  something it needs answered is left alone. After tools have run, a bare "next
+  I will summarize b.md" counts too.
+- A connection that drops in the middle of an answer no longer throws the answer
+  away: what arrived is kept and the model goes on from it.
+- A thinking model that spent its whole output limit thinking is asked to think
+  more briefly (twice) instead of ending with a warning.
+- A model that makes the same tool call six times is asked to answer with what
+  it already has, instead of ending in an error. An empty answer is asked for
+  twice, with or without tool results.
+- Provider failures that are only about the connection or the load are retried
+  up to eight times (was five), and then shown with a **Continue where it
+  stopped** button that picks the work up with no new message.
+- Added **Keep going until the work is done** in the settings (on by default;
+  it switches off going on after an announcement, keeping a dropped answer, the
+  thinking nudge and the final answer after repeated calls. Continuing a cut
+  answer, the retries and the Continue button stay).
+
+### PDFs
+
+- pdf.js's text was glued together in stream order, with a space after every
+  piece. For Persian that gave single glyphs in the wrong order and in
+  presentation forms; for English it split ligatures ("fl at"). Pages are now
+  laid out again from the positions: lines, reading order with right-to-left and
+  left-to-right runs, normalised letters, marks on their letters, mirrored
+  brackets restored, columns kept as ` | `, paragraphs kept.
+- A page whose text is mostly private-use or replacement characters, or
+  `(cid:n)` markers, is treated as having no text layer, and shown or described
+  like a scan.
+- Whole pages are included up to a share of the window, the model is told which
+  pages are missing, and can read them: new tools `read_pdf` (overview, pages,
+  search with Arabic/Persian folding, pages as pictures) and `find_pdfs`. A PDF
+  attached to a chat stays readable for as long as the chat is open; a PDF in
+  the vault is read by its path under the same access scope as notes.
+- `current_note` says when the open file is a PDF and points to `read_pdf`.
+- Tests: `test/harness-pdf.mjs` (with pdf.js output captured from real PDFs in
+  `test/fixtures/`), PDF and going-on scenarios in `test/harness-loop.mjs`, and
+  an optional `test/pdf-real.mjs` that prints PDFs with Chromium and reads them
+  with real pdf.js.
 ## 1.8.2 - The context bar and its details, as Obsidian draws them
 
 - Obsidian styles every `button:not(.clickable-icon)` with a fill, an inset
