@@ -78,8 +78,15 @@ jobs:
           console.log(`version=${expected}`);
           NODE
 
+      # The Obsidian API dependency points at the moving "master" tarball.
+      # Its contents can change while package-lock.json still has the old
+      # integrity hash, making npm ci fail with EINTEGRITY. Refresh lockfile
+      # metadata in the runner before the clean install.
+      - name: Refresh dependency lock metadata
+        run: npm install --package-lock-only --ignore-scripts --no-audit --no-fund
+
       - name: Install dependencies
-        run: npm ci
+        run: npm ci --no-audit --no-fund
 
       - name: Run tests
         run: npm test
