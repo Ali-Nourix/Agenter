@@ -8,7 +8,7 @@ Bring your notes, research, and everyday writing into one AI workspace. Chat bes
 
 [![Obsidian](https://img.shields.io/badge/Obsidian-1.7.2%2B-7C3AED?style=for-the-badge&logo=obsidian&logoColor=white)](https://obsidian.md)
 [![Platform](https://img.shields.io/badge/Platform-Desktop-343A40?style=for-the-badge&logo=windows-terminal&logoColor=white)](https://github.com/Ali-Nourix/Agenter)
-[![License](https://img.shields.io/badge/License-MIT-2F80ED?style=for-the-badge)](LICENSE)
+[![License](https://img.shields.io/badge/License-GPL--3.0-46A171?style=for-the-badge)](LICENSE)
 [![Latest Release](https://img.shields.io/github/v/release/Ali-Nourix/Agenter?style=for-the-badge&logo=github&label=Release)](https://github.com/Ali-Nourix/Agenter/releases/latest)
 
 [**Install**](#installation) · [**Setup**](#setup) · [**Features**](#features) · [**Screenshots**](#what-it-looks-like) · [**Providers**](#providers) · [**Development**](#development)
