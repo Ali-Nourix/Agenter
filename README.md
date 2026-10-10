@@ -6,6 +6,8 @@
 
 Bring your notes, research, and everyday writing into one AI workspace. Chat beside your notes, use vault-aware context, search the web, run reusable prompts, and review changes before they touch your vault.
 
+[فارسی](README.fa.md) · [Installation](#installation) · [Features](#features) · [Privacy](#privacy-and-network-access) · [Development](#development)
+
 [![Obsidian](https://img.shields.io/badge/Obsidian-1.7.2%2B-7C3AED?style=for-the-badge&logo=obsidian&logoColor=white)](https://obsidian.md)
 [![Platform](https://img.shields.io/badge/Platform-Desktop-343A40?style=for-the-badge&logo=windows-terminal&logoColor=white)](https://github.com/Ali-Nourix/Agenter)
 [![License](https://img.shields.io/badge/License-GPL--3.0-46A171?style=for-the-badge)](LICENSE)
