@@ -1,60 +1,72 @@
+<div align="center">
+
 # Agenter
 
-Agenter brings a tool-using AI assistant into Obsidian. Chat in the right
-sidebar, a movable floating window, or a compact popover beside the text you
-just selected. It can read and search your notes, look things up on the web,
-run your own saved prompts, and ask before it changes anything in the vault.
+**A tool-using AI assistant, built into Obsidian.**
 
-> **Status:** Desktop-only. Agenter is not an AI service — it talks to a
-> provider you configure with your own API key.
+Bring your notes, research, and everyday writing into one AI workspace. Chat beside your notes, use vault-aware context, search the web, run reusable prompts, and review changes before they touch your vault.
 
-## What it looks like
+[![Obsidian](https://img.shields.io/badge/Obsidian-1.7.2%2B-7C3AED?style=for-the-badge&logo=obsidian&logoColor=white)](https://obsidian.md)
+[![Platform](https://img.shields.io/badge/Platform-Desktop-343A40?style=for-the-badge&logo=windows-terminal&logoColor=white)](https://github.com/Ali-Nourix/Agenter)
+[![License](https://img.shields.io/badge/License-MIT-2F80ED?style=for-the-badge)](LICENSE)
+[![Latest Release](https://img.shields.io/github/v/release/Ali-Nourix/Agenter?style=for-the-badge&logo=github&label=Release)](https://github.com/Ali-Nourix/Agenter/releases/latest)
 
-The panel is built entirely from Obsidian's theme variables, so it follows the
-vault it is installed in:
+[**Install**](#installation) · [**Setup**](#setup) · [**Features**](#features) · [**Screenshots**](#what-it-looks-like) · [**Providers**](#providers) · [**Development**](#development)
 
-<table>
-<tr>
-<td align="center"><b>Dark</b></td>
-<td align="center"><b>Light</b></td>
-</tr>
-<tr>
-<td><img src="docs/images/chat-dark.png" alt="Chat panel in a dark vault" width="380"></td>
-<td><img src="docs/images/chat-light.png" alt="The same chat panel in a light vault" width="380"></td>
-</tr>
-</table>
+</div>
 
-Selecting text opens the contextual popover — one small card with the selection
-collapsed behind its word count, a scrollable row of actions, and a composer:
+---
 
-![The contextual popover beside a text selection](docs/images/contextual-popover-dark.png)
-
-Ask something and the card turns into the conversation, tool activity and
-approval cards included, without growing into a second chat window:
-
-![The contextual popover after a question, showing the reply inline](docs/images/contextual-popover-chat.png)
-
-The bar above the composer says how full the model's window is, in whatever
-state it is in, and a click opens what the window is made of. Retries,
-compaction and attachments leave one quiet line each in the conversation:
+## See Agenter in action
 
 <table>
 <tr>
-<td align="center"><b>Dark</b></td>
-<td align="center"><b>Light</b></td>
-<td align="center"><b>Details</b></td>
+<td align="center" width="50%"><strong>Dark theme</strong></td>
+<td align="center" width="50%"><strong>Light theme</strong></td>
 </tr>
 <tr>
-<td><img src="docs/images/context-meter-dark.png" alt="The context bar at 11%, 75%, 88% and 97%, then notices and attachment chips" width="280"></td>
-<td><img src="docs/images/context-meter-light.png" alt="The same in a light vault" width="280"></td>
-<td><img src="docs/images/context-meter-details-dark.png" alt="The details popover: what fills the window, and Compact now" width="280"></td>
+<td width="50%"><img src="docs/images/chat-dark.png" alt="Agenter chat panel in Obsidian dark theme" width="100%"></td>
+<td width="50%"><img src="docs/images/chat-light.png" alt="Agenter chat panel in Obsidian light theme" width="100%"></td>
 </tr>
 </table>
 
-<sub>These are rendered from the plugin's own `styles.css` and component code
-over Obsidian's default theme variables (see
-<a href="#previews">Development → Previews</a>), not screenshots of a live
-vault.</sub>
+<table>
+<tr>
+<td align="center" width="50%"><strong>Contextual AI popover</strong></td>
+<td align="center" width="50%"><strong>Live context window</strong></td>
+</tr>
+<tr>
+<td width="50%"><img src="docs/images/contextual-popover-chat.png" alt="Agenter contextual chat next to selected text" width="100%"></td>
+<td width="50%"><img src="docs/images/context-meter-dark.png" alt="Agenter context window meter and status indicators" width="100%"></td>
+</tr>
+</table>
+
+<details>
+<summary><strong>More screenshots</strong></summary>
+
+<table>
+<tr>
+<td align="center"><strong>Contextual popover</strong></td>
+<td align="center"><strong>Context details</strong></td>
+</tr>
+<tr>
+<td><img src="docs/images/contextual-popover-dark.png" alt="Agenter contextual popover before asking a question" width="100%"></td>
+<td><img src="docs/images/context-meter-details-dark.png" alt="Detailed context window breakdown" width="100%"></td>
+</tr>
+<tr>
+<td align="center"><strong>Context meter — light theme</strong></td>
+<td align="center"><strong>Context meter — dark theme</strong></td>
+</tr>
+<tr>
+<td><img src="docs/images/context-meter-light.png" alt="Agenter context meter in light theme" width="100%"></td>
+<td><img src="docs/images/context-meter-dark.png" alt="Agenter context meter in dark theme" width="100%"></td>
+</tr>
+</table>
+
+</details>
+
+> [!IMPORTANT]
+> **Agenter is a plugin, not an AI service.** It connects to the provider and model you configure. You supply your own API credentials, or use a supported local Ollama setup. Available capabilities and costs depend on that provider.
 
 ## Contents
 
