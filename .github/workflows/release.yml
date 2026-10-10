@@ -2,6 +2,8 @@ name: Release Obsidian plugin
 
 on:
   push:
+    branches:
+      - main
     tags:
       - "*"
   # The same build, run by hand from the Actions tab. By default it only
