@@ -22,11 +22,11 @@
     "builtin-modules": "^3.3.0",
     "esbuild": "^0.21.0",
     "jsdom": "^29.1.1",
-    "obsidian": "https://github.com/obsidianmd/obsidian-api/tarball/master",
+    "obsidian": "git+https://github.com/obsidianmd/obsidian-api.git#9abd9605ce081383674aae1ed111c456edde0688",
     "tslib": "^2.6.0",
     "typescript": "^5.4.0"
   },
   "overrides": {
-    "obsidian": "https://github.com/obsidianmd/obsidian-api/tarball/master"
+    "obsidian": "git+https://github.com/obsidianmd/obsidian-api.git#9abd9605ce081383674aae1ed111c456edde0688"
   }
 }
