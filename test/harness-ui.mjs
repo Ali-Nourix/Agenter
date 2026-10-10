@@ -93,6 +93,7 @@ const say = (text, usage) => (res) => {
 const fail = (status) => (res) => { res.writeHead(status, { "Retry-After": "0" }); res.end("{}"); };
 
 const clipboard = [];
+Object.defineProperty(globalThis, "navigator", { value: window.navigator, configurable: true, writable: true });
 Object.defineProperty(globalThis.navigator, "clipboard", { value: { writeText: async (t) => { clipboard.push(t); } }, configurable: true });
 
 const entry = `
