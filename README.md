@@ -522,4 +522,4 @@ the GitHub profile.
 
 ## License
 
-Agenter is released under the [MIT License](LICENSE).
+Agenter is released under the [GNU General Public License v3.0](LICENSE).
