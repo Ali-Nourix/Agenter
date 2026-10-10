@@ -1,12 +1,12 @@
 {
   "name": "agenter",
-  "version": "1.7.1",
+  "version": "1.9.0",
   "description": "AI agent plugin for Obsidian with multi-provider support and floating chat.",
   "main": "main.js",
   "scripts": {
     "dev": "node esbuild.config.mjs",
     "build": "tsc -noEmit -skipLibCheck && node esbuild.config.mjs production",
-    "test": "node test/run-test.mjs && node test/stream-test.mjs && node test/panel-smoke.mjs && node test/tool-flow.mjs && node test/folder-race.mjs && node test/scope-access.mjs && node test/explicit-access.mjs && node test/access-resume.mjs && node test/timeline-layout.mjs && node test/scroll-stability.mjs && node test/thinking-visual.mjs && node test/contextual-popover.mjs"
+    "test": "node test/run-test.mjs && node test/stream-test.mjs && node test/panel-smoke.mjs && node test/tool-flow.mjs && node test/folder-race.mjs && node test/scope-access.mjs && node test/explicit-access.mjs && node test/access-resume.mjs && node test/timeline-layout.mjs && node test/scroll-stability.mjs && node test/thinking-visual.mjs && node test/contextual-popover.mjs && node test/harness-core.mjs && node test/harness-providers.mjs && node test/harness-attachments.mjs && node test/harness-pdf.mjs && node test/harness-loop.mjs && node test/harness-ui.mjs"
   },
   "keywords": [
     "obsidian",

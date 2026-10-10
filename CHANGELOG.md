@@ -1,5 +1,184 @@
 # Changelog
 
+## 1.9.0 - Going on by itself, and PDFs a model can understand
+
+### A model that stops in the middle of the job is told to go on
+
+- An answer that stopped at the output limit but was reported as a normal stop
+  (a stop that used every token it was allowed) is continued like any other cut
+  answer.
+- A model that stops after announcing the next step ("first I will write the
+  middle sections:"), writing "part 1 of 3", or asking "shall I continue?", in
+  English or Persian, is told to do it now, in the same reply, up to four times
+  in a row; a continuation that adds almost nothing ends it, and a model asking
+  something it needs answered is left alone. After tools have run, a bare "next
+  I will summarize b.md" counts too.
+- A connection that drops in the middle of an answer no longer throws the answer
+  away: what arrived is kept and the model goes on from it.
+- A thinking model that spent its whole output limit thinking is asked to think
+  more briefly (twice) instead of ending with a warning.
+- A model that makes the same tool call six times is asked to answer with what
+  it already has, instead of ending in an error. An empty answer is asked for
+  twice, with or without tool results.
+- Provider failures that are only about the connection or the load are retried
+  up to eight times (was five), and then shown with a **Continue where it
+  stopped** button that picks the work up with no new message.
+- Added **Keep going until the work is done** in the settings (on by default;
+  it switches off going on after an announcement, keeping a dropped answer, the
+  thinking nudge and the final answer after repeated calls. Continuing a cut
+  answer, the retries and the Continue button stay).
+
+### PDFs
+
+- pdf.js's text was glued together in stream order, with a space after every
+  piece. For Persian that gave single glyphs in the wrong order and in
+  presentation forms; for English it split ligatures ("fl at"). Pages are now
+  laid out again from the positions: lines, reading order with right-to-left and
+  left-to-right runs, normalised letters, marks on their letters, mirrored
+  brackets restored, columns kept as ` | `, paragraphs kept.
+- A page whose text is mostly private-use or replacement characters, or
+  `(cid:n)` markers, is treated as having no text layer, and shown or described
+  like a scan.
+- Whole pages are included up to a share of the window, the model is told which
+  pages are missing, and can read them: new tools `read_pdf` (overview, pages,
+  search with Arabic/Persian folding, pages as pictures) and `find_pdfs`. A PDF
+  attached to a chat stays readable for as long as the chat is open; a PDF in
+  the vault is read by its path under the same access scope as notes.
+- `current_note` says when the open file is a PDF and points to `read_pdf`.
+- Tests: `test/harness-pdf.mjs` (with pdf.js output captured from real PDFs in
+  `test/fixtures/`), PDF and going-on scenarios in `test/harness-loop.mjs`, and
+  an optional `test/pdf-real.mjs` that prints PDFs with Chromium and reads them
+  with real pdf.js.
+## 1.8.2 - The context bar and its details, as Obsidian draws them
+
+- Obsidian styles every `button:not(.clickable-icon)` with a fill, an inset
+  border and a 30px height, and that outweighs a plain class — so in the app the
+  context bar was drawn as a boxed button with a heavy focus ring, **Copy harness
+  report** as a bordered button, and the copy chips as empty boxes. The plugin's
+  buttons now carry enough weight to win: the bar is a bare track and a label,
+  the link is a link, the actions line up, and keyboard focus gets a plain
+  outline (not a ring left behind by a mouse click).
+- The details popover puts the model on its own line under the title, so
+  **Context window** no longer wraps in two when the model's name is long.
+- The estimate fill on the bar is solid and slightly dimmer, instead of a
+  hatched pattern (the `≈` already says it is an estimate), and the track is a
+  pixel thicker.
+- Gemma 3 and later models are taken to read 128k tokens (3n: 32k) instead of
+  falling into the 8k of the first generations, so a Gemma 4 on Workers AI is no
+  longer limited to answers of about 4k. A provider that reports its own window,
+  or an error that names it, still wins over this.
+- `test/obsidian-controls.css` reproduces Obsidian's default button and slider
+  rules, and the context-bar preview loads it, so a preview no longer hides the
+  places where the app's own styles win.
+
+## 1.8.1 - The model menu's sliders
+
+- Redrew the sliders in the model menu. Obsidian's own slider is a hairline with
+  an 18px white thumb that spilled over the dividers between rows; the control
+  now has room of its own, a filled track in the accent colour and a thumb that
+  follows the theme, in dark and light.
+- Answer length and other counts are whole numbers: dragging the slider could
+  leave `4070.5` in the box. Values are rounded to the control's step, clamped
+  to the model's limits, and a leftover fraction from before is shown rounded.
+- With no number of its own, **Max output tokens** now shows what is really asked
+  for (the model's maximum) instead of a schema default, and **Auto** lights up
+  while it is in effect. **Context window** gets the same, with a shorter
+  placeholder that no longer gets cut off.
+- Rows line up: the number box and **Auto** sit together at the right edge of
+  every row, and **Reset for this model** is readable on dark themes.
+
+## 1.8.0 - A harness for every model, a context bar, attachments, and copying
+
+### No answer cap, and a bar for the window
+
+- Removed the plugin's own answer limit. **Answer length limit** now defaults to
+  *auto* (`0`): each request asks for the most the model can write given what
+  is already in the window. A stored value of the old default (4096) is reset to
+  auto on upgrade; any other number is kept as a cap.
+- Added a context bar above the composer and in the contextual popover. It shows
+  the share of the window in use, marks where compaction starts, is a labelled
+  `meter` for assistive technology, and opens a popover that breaks the window
+  into instructions, tools, conversation and what is being typed, with
+  **Compact now**, **New chat** and **Copy harness report**. A leading `≈` marks
+  an estimate until the provider's own count replaces it.
+
+### The harness
+
+- Added per-model profiles (window, largest answer, what the model refuses),
+  resolved from your override, limits learned from errors, the provider's model
+  list, a table of known models, then a default. Learned limits are saved;
+  **Forget learned limits** and a window override in the model menu are in the
+  settings.
+- Added conversation compaction: old tool output is cleared, the oldest turns are
+  summarized with the model, and what is left over is dropped with a note. The
+  latest question and the last tool results are kept. **Compact long
+  conversations** and **Compact when this full** control it; the
+  **Compact this conversation now** command runs it on demand.
+- Capped single tool results (head and tail, with a hint for asking for the
+  rest), and extracted embedded base64 images into real image parts.
+- Added error handling that reads the provider's reason: window and answer
+  limits it names, and parameters it refuses (`temperature`, `max_tokens` vs
+  `max_completion_tokens`, `stream_options`, tools). Agenter adjusts and
+  retries. Rate limits, overload and dropped connections are retried with
+  `Retry-After` or backoff, and a stream that ends without a finish is retried
+  instead of being accepted as a short answer.
+- Answers cut at the limit are continued and joined into one message.
+- Tool calls written as text (Hermes `<tool_call>`, Mistral `[TOOL_CALLS]`,
+  fenced or bare JSON, `<function=…>`) are read and run, and kept off the
+  screen while streaming. Broken tool-argument JSON is repaired or sent back to
+  the model with what was wrong. Models that refuse native tools get them
+  described in the prompt.
+- Added a sanitizer for histories that stricter APIs reject: orphaned or missing
+  tool results, duplicate ids, empty messages, a first turn that is not the
+  user's.
+- Added loop and empty-answer guards: a nudge for an empty answer, a warning at
+  three identical tool calls, a stop at six.
+- Provider fixes: Anthropic merged tool results, `is_error`, prompt caching on
+  Anthropic's own host and temperature clamping; Gemini unique call ids, merged
+  function responses, `thoughtSignature` round-trip, a schema sanitizer, the key
+  in a header instead of the URL, and no built-in search together with
+  functions; OpenAI `max_completion_tokens` and `reasoning_content` pass-back
+  for the thinking models that need it; Ollama through its native `/api/chat`
+  with a real `num_ctx` (capped at 32k unless **Ollama: use the model's whole
+  context** is on), falling back to the OpenAI route on older servers.
+- Reasoning models get long first-byte timeouts; stopping a request now closes
+  the connection.
+- Added **Copy harness report** (settings, popover, command palette) with what
+  Agenter did and what it knows about the model, for bug reports.
+
+### Attachments
+
+- The composer takes several attachments at once — picker, drop or paste —
+  each with a chip that says what the model will receive: images, PDFs, Word,
+  PowerPoint, Excel, text and code, and audio, up to 32 MB each.
+- Models that can see get pictures (downscaled when large) and PDFs natively
+  where the provider reads them. Otherwise PDF text is extracted with Obsidian's
+  own PDF engine, Office files are read from the file, and scanned pages are
+  drawn and shown.
+- Models that cannot see get a description from a *vision helper* provider
+  (**Describe images for models that cannot see**: automatic, a chosen
+  provider, or off), or an honest note telling them not to guess.
+- Attachments are counted against the window and trimmed with a visible note
+  when they would not fit.
+
+### Copying text
+
+- Messages are selectable. Each has a copy button, a right-click menu (copy the
+  selection, the message as Markdown or plain text, select the message, copy the
+  whole conversation) and the header copies the whole thread as Markdown.
+- Retry, compaction and repair lines are shown in the chat but never saved into
+  the history.
+
+### Tests and previews
+
+- Added `test/harness-core.mjs`, `harness-providers.mjs`, `harness-attachments.mjs`,
+  `harness-loop.mjs` and `harness-ui.mjs`: scripted HTTP servers that behave like
+  awkward providers, the agent loop end to end, and the UI code in jsdom.
+- Added `test/meter-preview.html` and `test/render-harness-preview.mjs` to render
+  the context bar from the real stylesheet and component.
+- Not yet checked in a live Obsidian vault or against the real provider APIs:
+  PDF page rendering, limit discovery, and mobile.
+
 ## 1.7.1 - Scrollable chip row, and previews of the real UI
 
 - The contextual popover's action row read as clipped rather than scrollable;

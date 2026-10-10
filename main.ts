@@ -4,12 +4,14 @@ import {
   DEFAULT_SETTINGS,
   AgentSettingTab,
   deriveTitle,
+  getActiveProvider,
   getActiveSession,
 } from "./src/settings";
 import { FloatingChatPanel } from "./src/ui";
 import { SelectionPopover, openSelectionPopover } from "./src/selection-popover";
 import { fetchCloudflareModels, cacheExpiry } from "./src/cloudflare";
 import { connectCloudflareOAuth, listCloudflareAccounts, refreshCloudflareOAuth, revokeCloudflareOAuth } from "./src/cloudflare-oauth";
+import { HarnessServices, ModelProfile, createHarnessServices, profileFor } from "./src/harness";
 
 export const AGENTER_VIEW_TYPE = "agenter-chat-view";
 
@@ -68,6 +70,8 @@ class AgenterChatView extends ItemView {
 export default class AgenterPlugin extends Plugin {
   settings!: AgentSettings;
   activeChatPanel: FloatingChatPanel | null = null;
+  /** The harness that keeps models working: its log, and the token calibration shared by every chat. */
+  harness: HarnessServices = createHarnessServices(() => this.saveSettings());
   private floatingPanel: FloatingChatPanel | null = null;
   private selectionTimer: number | null = null;
 
@@ -93,6 +97,25 @@ export default class AgenterPlugin extends Plugin {
       id: "open-floating-chat",
       name: "Open floating chat",
       callback: () => void this.openFloatingChat(),
+    });
+
+    this.addCommand({
+      id: "copy-harness-report",
+      name: "Copy harness report (how the model is being handled)",
+      callback: async () => {
+        try {
+          await navigator.clipboard.writeText(this.harnessReport());
+          new Notice("Harness report copied.");
+        } catch {
+          new Notice("Could not copy the harness report.");
+        }
+      },
+    });
+
+    this.addCommand({
+      id: "compact-conversation",
+      name: "Compact this conversation now",
+      callback: () => void this.activeChatPanel?.compactNow(),
     });
 
     this.addCommand({
@@ -388,6 +411,11 @@ export default class AgenterPlugin extends Plugin {
     if (!this.settings.toolApproval) {
       this.settings.toolApproval = { ...DEFAULT_SETTINGS.toolApproval };
     }
+    // The old default cap of 4096 tokens per answer is gone: no limit of the plugin's own is the default now.
+    if (this.settings.maxTokens === 4096 || !Number.isFinite(this.settings.maxTokens) || this.settings.maxTokens < 0) this.settings.maxTokens = 0;
+    if (!this.settings.modelLimits || typeof this.settings.modelLimits !== "object") this.settings.modelLimits = {};
+    if (!this.settings.modelOverrides || typeof this.settings.modelOverrides !== "object") this.settings.modelOverrides = {};
+    if (!(this.settings.compactThreshold >= 0.5 && this.settings.compactThreshold <= 0.95)) this.settings.compactThreshold = DEFAULT_SETTINGS.compactThreshold;
     if (!Array.isArray(this.settings.sessions)) this.settings.sessions = [];
     if (!this.settings.customPrompts) {
       this.settings.customPrompts = { ...DEFAULT_SETTINGS.customPrompts };
@@ -410,5 +438,27 @@ export default class AgenterPlugin extends Plugin {
 
   async saveSettings() {
     await this.saveData(this.settings);
+  }
+
+  /** What is known about the model in use. */
+  currentProfile(): ModelProfile | null {
+    const provider = getActiveProvider(this.settings);
+    return provider ? profileFor(this.settings, provider) : null;
+  }
+
+  harnessReport(): string {
+    const profile = this.currentProfile();
+    const provider = getActiveProvider(this.settings);
+    return this.harness.log.report(profile, {
+      "Answer length limit": this.settings.maxTokens > 0 ? this.settings.maxTokens : "none (model maximum)",
+      "Compaction": this.settings.autoCompact ? `on at ${Math.round(this.settings.compactThreshold * 100)}%` : "off",
+      "Provider": provider?.name,
+    });
+  }
+
+  /** The bar that shows how full the window is: redraw it (a model, a setting or a limit changed). */
+  refreshContextMeters(): void {
+    this.activeChatPanel?.refreshContextMeter();
+    SelectionPopover.refreshCurrentMeter();
   }
 }
